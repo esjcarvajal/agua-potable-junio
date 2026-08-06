@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Archivos pesados / deploy
+*.zip
+agua-potable-deploy/
+juliojulio/
+assets/
