@@ -1,0 +1,23 @@
+# Agua Potable La Campiña - Project Rules
+
+## 1. Diseño y Estilos (Design System)
+- **Tailwind CSS:** Se debe usar Tailwind exclusivamente para los estilos. NO agregar estilos en línea (`style={{}}`) a menos que sea estrictamente necesario (ej: barras de progreso dinámicas, grid backgrounds o z-index dinámicos).
+- **Modo Oscuro:** Todas las pantallas y modales deben estar adaptados al modo oscuro utilizando el prefijo `dark:` de Tailwind.
+- **Botones y Acciones:** Deben tener altura consistente (ej: `py-3` o `py-2.5`), estar redondeados (`rounded-xl` o `rounded-[12px]`) y si son primarios deben incluir gradientes y sombras (ej: `bg-gradient-to-br from-[#005e97] to-[#0077be]`).
+- **Estados de Hover y Transiciones:** Añadir siempre `transition-colors`, `transition-all` y efectos en `hover:` para mejorar la experiencia web.
+- **Tipografía:** 
+  - Usar `font-manrope` para títulos y encabezados.
+  - Usar `font-grotesk` OBLIGATORIAMENTE para valores numéricos, precios, fechas y métricas.
+  - Usar `font-inter` para párrafos y etiquetas.
+
+## 2. Desarrollo e Implementación
+- **Lenguaje:** TypeScript + React (Vite).
+- **Zustand:** Todo el estado global (ventas, clientes, prepagos, inventario) se gestiona desde `src/store/useAppStore.ts`.
+- **Google Sheets:** Funciona como backend y base de datos persistente. Todas las acciones transaccionales (ventas, cierres, compras) deben llamar a `insertRow` desde `src/lib/db.ts` de forma síncrona/asíncrona.
+
+## 3. Localización e Idioma
+- Todo el texto del código, consola de logs (en producción), interfaces, modales, placeholders de input, etc., DEBE estar obligatoriamente en español. Ningún botón debe decir "Cancel", sino "Cancelar", ni "Submit" sino "Confirmar", etc.
+
+## 4. Reglas Estrictas de Layout
+- NO está permitido el uso de posición fija (`fixed`) en modales o contenedores generales para evitar problemas en móviles o en diferentes resoluciones, a excepción de las ventanas modales absolutas limitadas al height del DOM visible. Usar en su defecto `absolute inset-0 z-50` junto a un wrapper de `overflow-auto`.
+- Las pantallas no deben romperse ni tener el scroll general modificado.
