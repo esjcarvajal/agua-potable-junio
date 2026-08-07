@@ -10,6 +10,7 @@ import { insertRow } from './db'
 import { useAppStore } from '../store/useAppStore'
 
 import { getLocalDateString } from './dateUtils'
+import { precioLineaUsd } from './carritoUtils'
 
 const FLAG_KEY_PREFIX = 'agua-potable-cierre-auto-'
 
@@ -80,8 +81,7 @@ export async function generarCierreAutomatico(): Promise<Record<string, unknown>
             desgloseProductosMap[key] = { nombre: item.producto.nombre, cantidad: 0, totalUsd: 0 }
           }
           desgloseProductosMap[key].cantidad += item.cantidad || 1
-          const precio = item.usarPrepago ? 0 : (item.producto.precio || 0)
-          desgloseProductosMap[key].totalUsd += precio * (item.cantidad || 1)
+          desgloseProductosMap[key].totalUsd += precioLineaUsd(item)
         }
       })
     } catch { /* skip */ }

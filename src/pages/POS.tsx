@@ -11,6 +11,8 @@ import {
   Truck, CreditCard, Smartphone, Banknote, Wallet, Users, ChevronUp, Clock
 } from 'lucide-react'
 import { getLocalDateString } from '../lib/dateUtils'
+import { expandirLineasRecibo, subtotalCarritoUsd } from '../lib/carritoUtils'
+import ImagenProducto from '../components/ImagenProducto'
 
 /* ════════════════════════════════════════════════════════════════════
    TOAST COMPONENT
@@ -68,7 +70,8 @@ interface Producto {
 interface CarritoItem {
   producto: Producto
   cantidad: number
-  usarPrepago: boolean
+  /** Unidades de esta línea cubiertas por recargas prepagadas (0 … cantidad) */
+  cantidadPrepago: number
 }
 
 const PRODUCTOS_DEFAULT_POS: Producto[] = [
@@ -140,7 +143,8 @@ interface ReciboData {
 }
 
 function ReciboTermico({ data, logo }: { data: ReciboData; logo?: string }) {
-  const subtotal = data.items.reduce((s, i) => s + (i.usarPrepago ? 0 : i.producto.precio) * i.cantidad, 0)
+  const subtotal = subtotalCarritoUsd(data.items)
+  const lineasRecibo = expandirLineasRecibo(data.items)
 
   return (
     <div id="recibo-termico" style={{
@@ -198,21 +202,17 @@ function ReciboTermico({ data, logo }: { data: ReciboData; logo?: string }) {
       </div>
 
       {/* Items */}
-      {data.items.map((item, i) => {
-        const precioUnit = item.usarPrepago ? 0 : item.producto.precio
-        const totalItem = precioUnit * item.cantidad
-        return (
-          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginBottom: '2px' }}>
-            <span style={{ flex: 2, whiteSpace: 'nowrap', overflow: 'hidden', maxWidth: '28mm' }}>
-              {item.producto.nombre}{item.usarPrepago ? ' *' : ''}
-            </span>
-            <span style={{ flex: 1, textAlign: 'center' }}>{item.cantidad}</span>
-            <span style={{ flex: 1, textAlign: 'right' }}>${precioUnit.toFixed(2)}</span>
-            <span style={{ flex: 1, textAlign: 'right' }}>${totalItem.toFixed(2)}</span>
-          </div>
-        )
-      })}
-      {data.items.some(i => i.usarPrepago) && (
+      {lineasRecibo.map((linea, i) => (
+        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginBottom: '2px' }}>
+          <span style={{ flex: 2, whiteSpace: 'nowrap', overflow: 'hidden', maxWidth: '28mm' }}>
+            {linea.nombre}
+          </span>
+          <span style={{ flex: 1, textAlign: 'center' }}>{linea.cantidad}</span>
+          <span style={{ flex: 1, textAlign: 'right' }}>${linea.precioUnit.toFixed(2)}</span>
+          <span style={{ flex: 1, textAlign: 'right' }}>${linea.total.toFixed(2)}</span>
+        </div>
+      ))}
+      {lineasRecibo.some(l => l.esPrepago) && (
         <div style={{ fontSize: '9px', color: '#555', marginTop: '2px' }}>* Pagado con prepago</div>
       )}
 
@@ -310,13 +310,12 @@ function imprimirRecibo(data: ReciboData, logo?: string) {
     <div style="display:flex;justify-content:space-between;font-weight:bold;font-size:10px;margin-bottom:3px">
       <span style="flex:2">DESCRIPCIÓN</span><span style="flex:1;text-align:center">CANT</span><span style="flex:1;text-align:right">P.UNIT</span><span style="flex:1;text-align:right">TOTAL</span>
     </div>
-    ${data.items.map(item => {
-      const p = item.usarPrepago ? 0 : item.producto.precio
+    ${expandirLineasRecibo(data.items).map(linea => {
       return `<div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px">
-        <span style="flex:2;overflow:hidden;max-width:28mm">${item.producto.nombre}${item.usarPrepago ? ' *' : ''}</span>
-        <span style="flex:1;text-align:center">${item.cantidad}</span>
-        <span style="flex:1;text-align:right">$${p.toFixed(2)}</span>
-        <span style="flex:1;text-align:right">$${(p * item.cantidad).toFixed(2)}</span>
+        <span style="flex:2;overflow:hidden;max-width:28mm">${linea.nombre}</span>
+        <span style="flex:1;text-align:center">${linea.cantidad}</span>
+        <span style="flex:1;text-align:right">$${linea.precioUnit.toFixed(2)}</span>
+        <span style="flex:1;text-align:right">$${linea.total.toFixed(2)}</span>
       </div>`
     }).join('')}
     ${data.isDelivery && data.costoDelivery > 0 ? `<div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px"><span style="flex:2">Envío a domicilio</span><span style="flex:1;text-align:center">1</span><span style="flex:1;text-align:right">$${data.costoDelivery.toFixed(2)}</span><span style="flex:1;text-align:right">$${data.costoDelivery.toFixed(2)}</span></div>` : ''}
@@ -457,8 +456,9 @@ export default function POS() {
 
   const subtotalUsd = useMemo(() =>
     carrito.reduce((sum, item) => {
-      const precio = item.usarPrepago ? 0 : item.producto.precio
-      return sum + precio * item.cantidad
+      // Solo se cobran las unidades NO cubiertas por prepago
+      const pagadas = Math.max(0, item.cantidad - item.cantidadPrepago)
+      return sum + item.producto.precio * pagadas
     }, 0)
   , [carrito])
 
@@ -481,17 +481,22 @@ export default function POS() {
           i.producto.id === producto.id ? { ...i, cantidad: i.cantidad + 1 } : i
         )
       }
-      return [...prev, { producto, cantidad: 1, usarPrepago: false }]
+      return [...prev, { producto, cantidad: 1, cantidadPrepago: 0 }]
     })
   }
 
   const cambiarCantidad = (productoId: string, delta: number) => {
     setCarrito(prev =>
-      prev.map(i =>
-        i.producto.id === productoId
-          ? { ...i, cantidad: Math.max(1, i.cantidad + delta) }
-          : i
-      )
+      prev.map(i => {
+        if (i.producto.id !== productoId) return i
+        const nuevaCantidad = Math.max(1, i.cantidad + delta)
+        // El prepago nunca puede superar la cantidad de la línea
+        return {
+          ...i,
+          cantidad: nuevaCantidad,
+          cantidadPrepago: Math.min(i.cantidadPrepago, nuevaCantidad),
+        }
+      })
     )
   }
 
@@ -499,11 +504,30 @@ export default function POS() {
     setCarrito(prev => prev.filter(i => i.producto.id !== productoId))
   }
 
-  const togglePrepago = (productoId: string) => {
+  const aplicarPrepago = (productoId: string) => {
     setCarrito(prev =>
-      prev.map(i =>
-        i.producto.id === productoId ? { ...i, usarPrepago: !i.usarPrepago } : i
-      )
+      prev.map(i => {
+        if (i.producto.id !== productoId) return i
+
+        // Desactivar: vuelve a cobrarse la línea completa
+        if (i.cantidadPrepago > 0) return { ...i, cantidadPrepago: 0 }
+
+        const disponibles = getPrepagoDisponibles(i)
+        if (disponibles <= 0) {
+          showToast('El cliente no tiene recargas prepagadas de este tipo', 'error')
+          return i
+        }
+
+        // Cubre hasta donde alcance — el resto se cobra normal
+        const cubiertas = Math.min(i.cantidad, disponibles)
+        if (cubiertas < i.cantidad) {
+          showToast(
+            `${cubiertas} recarga(s) con prepago · ${i.cantidad - cubiertas} se cobran normal`,
+            'warning'
+          )
+        }
+        return { ...i, cantidadPrepago: cubiertas }
+      })
     )
   }
 
@@ -526,6 +550,15 @@ export default function POS() {
       })
       .reduce((sum: number, p: any) => sum + ((p.recargas_compradas ?? 0) - (p.recargas_usadas ?? 0)), 0)
   }
+
+  // Al cambiar de cliente, el prepago marcado deja de ser válido
+  useEffect(() => {
+    setCarrito(prev =>
+      prev.some(i => i.cantidadPrepago > 0)
+        ? prev.map(i => (i.cantidadPrepago > 0 ? { ...i, cantidadPrepago: 0 } : i))
+        : prev
+    )
+  }, [clienteSeleccionado?.id])
 
   const agregarManual = () => {
     if (!manualNombre.trim() || !manualPrecio) return
@@ -634,6 +667,21 @@ export default function POS() {
       }
     }
 
+    // 4.6. Validar prepagos contra disponibilidad ACTUAL
+    // (otra caja pudo consumirlos mientras esta línea estaba abierta)
+    for (const item of carrito) {
+      if (item.cantidadPrepago > 0) {
+        const disponibles = getPrepagoDisponibles(item)
+        if (item.cantidadPrepago > disponibles) {
+          showToast(
+            `Prepagos insuficientes para ${item.producto.nombre}: ${disponibles} disponible(s)`,
+            'error'
+          )
+          return
+        }
+      }
+    }
+
     // Generar número de orden secuencial diario
     const ventasHoy = store.ventas.filter((v: any) => v.fecha === getLocalDateString())
     const nuevoOrden = String(ventasHoy.length + 1).padStart(3, '0')
@@ -667,7 +715,7 @@ export default function POS() {
       }
     } catch {
       setVentaSynced(false)
-      showToast('Error al sincronizar con Sheets', 'warning')
+      showToast('Error al sincronizar con la nube', 'warning')
     }
 
     // 7. Descontar litros
@@ -711,10 +759,10 @@ export default function POS() {
     }
 
     // 9. Actualizar prepagos usados
-    const itemsPrepago = carrito.filter(item => item.usarPrepago && item.producto.esRecarga)
+    const itemsPrepago = carrito.filter(item => item.cantidadPrepago > 0 && item.producto.esRecarga)
     for (const item of itemsPrepago) {
       const litrosItem = item.producto.litros
-      let recargasPendientes = item.cantidad
+      let recargasPendientes = item.cantidadPrepago
       // Find matching prepagos for this bottle type
       const matchingPrepagos = prepagos
         .filter((p: any) => p.cliente_id === clienteSeleccionado?.id
@@ -730,7 +778,7 @@ export default function POS() {
           sp.id === p.id ? { ...sp, recargas_usadas: nuevoUsadas } : sp
         )
         useAppStore.setState({ prepagos: updatedPrepagos })
-        // Sync to Sheets
+        // Sincronizar con Firebase
         updateRow('prepagos', p.id, { recargas_usadas: nuevoUsadas })
         recargasPendientes -= usar
       }
@@ -862,6 +910,7 @@ export default function POS() {
                 hover:border-primary dark:hover:border-[#5bb3e8] hover:bg-[#f0f7ff] dark:hover:bg-[#1a1d27] transition-all duration-200 shadow-sm
                 active:scale-[0.97] group"
             >
+              <ImagenProducto id={p.id} nombre={p.nombre} esRecarga={p.esRecarga} />
               <div className="font-inter font-bold text-sm text-onSurface dark:text-[#e4e6f0] mb-2 group-hover:text-primary dark:group-hover:text-[#5bb3e8] transition-colors">
                 {p.nombre}
               </div>
@@ -948,7 +997,7 @@ export default function POS() {
           getPrepagoDisponibles={getPrepagoDisponibles}
           cambiarCantidad={cambiarCantidad}
           eliminarItem={eliminarItem}
-          togglePrepago={togglePrepago}
+          aplicarPrepago={aplicarPrepago}
           itemTienePrepago={itemTienePrepago}
           subtotalUsd={subtotalUsd}
           totalUsd={totalUsd}
@@ -1006,7 +1055,7 @@ export default function POS() {
                 getPrepagoDisponibles={getPrepagoDisponibles}
                 cambiarCantidad={cambiarCantidad}
                 eliminarItem={eliminarItem}
-                togglePrepago={togglePrepago}
+                aplicarPrepago={aplicarPrepago}
                 itemTienePrepago={itemTienePrepago}
                 subtotalUsd={subtotalUsd}
                 totalUsd={totalUsd}
@@ -1388,7 +1437,7 @@ interface OrderPanelProps {
   getPrepagoDisponibles: (item: CarritoItem) => number
   cambiarCantidad: (id: string, delta: number) => void
   eliminarItem: (id: string) => void
-  togglePrepago: (id: string) => void
+  aplicarPrepago: (id: string) => void
   itemTienePrepago: (item: CarritoItem) => boolean
   subtotalUsd: number
   totalUsd: number
@@ -1408,7 +1457,7 @@ function OrderPanel({
   clientesFilterResults, clienteSeleccionado, setClienteSeleccionado,
   clientePrepagosCount, clientePrepagosDetalle, clienteNivel,
   onShowPrepago, getPrepagoDisponibles,
-  cambiarCantidad, eliminarItem, togglePrepago,
+  cambiarCantidad, eliminarItem, aplicarPrepago,
   itemTienePrepago, subtotalUsd, totalUsd, isDelivery, costoDelivery,
   setCostoDelivery, metodoPago, setMetodoPago, referenciaPagoMovil,
   setReferenciaPagoMovil, completarTransaccion, usdToVes,
@@ -1519,9 +1568,10 @@ function OrderPanel({
         ) : (
           <div className="space-y-3">
             {carrito.map(item => {
-              const precioUnitario = item.usarPrepago ? 0 : item.producto.precio
-              const precioTotal = precioUnitario * item.cantidad
+              const pagadas = Math.max(0, item.cantidad - item.cantidadPrepago)
+              const precioTotal = item.producto.precio * pagadas
               const hasPrepago = itemTienePrepago(item)
+              const coberturaTotal = item.cantidadPrepago > 0 && item.cantidadPrepago >= item.cantidad
               return (
                 <div
                   key={item.producto.id}
@@ -1533,9 +1583,9 @@ function OrderPanel({
                         <span className="font-inter font-bold text-sm text-onSurface dark:text-[#e4e6f0] truncate">
                           {item.producto.nombre}
                         </span>
-                        {item.usarPrepago && (
+                        {item.cantidadPrepago > 0 && (
                           <span className="text-[9px] font-bold font-grotesk px-1.5 py-0.5 rounded-full bg-blue-100 text-primary">
-                            PREPAGO
+                            {coberturaTotal ? 'PREPAGO' : `${item.cantidadPrepago}/${item.cantidad} PREPAGO`}
                           </span>
                         )}
                       </div>
@@ -1568,22 +1618,24 @@ function OrderPanel({
                         <Plus size={14} />
                       </button>
                     </div>
-                    <span className={`font-grotesk font-bold text-base ${item.usarPrepago ? 'text-green-600 dark:text-green-500' : 'text-onSurface dark:text-[#e4e6f0]'}`}>
+                    <span className={`font-grotesk font-bold text-base ${coberturaTotal ? 'text-green-600 dark:text-green-500' : 'text-onSurface dark:text-[#e4e6f0]'}`}>
                       ${precioTotal.toFixed(2)}
                     </span>
                   </div>
                   {/* Toggle prepago */}
                   {hasPrepago && (
                     <button
-                      onClick={() => togglePrepago(item.producto.id)}
+                      onClick={() => aplicarPrepago(item.producto.id)}
                       className={`mt-2 w-full text-center text-xs font-bold font-manrope py-1.5 rounded-lg transition-colors ${
-                        item.usarPrepago
+                        item.cantidadPrepago > 0
                           ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
                           : 'bg-gray-100 dark:bg-[#1e2235] text-gray-500 dark:text-gray-400 hover:bg-blue-50 dark:hover:bg-[#2d3148] hover:text-primary dark:hover:text-[#5bb3e8] border border-transparent dark:border-[#2d3148]'
                       }`}
                     >
-                      {item.usarPrepago
-                        ? '✓ Prepago aplicado'
+                      {item.cantidadPrepago > 0
+                        ? (coberturaTotal
+                            ? '✓ Prepago aplicado'
+                            : `✓ ${item.cantidadPrepago} con prepago · ${item.cantidad - item.cantidadPrepago} se cobran`)
                         : `Usar prepago (${getPrepagoDisponibles(item)} disponibles)`}
                     </button>
                   )}

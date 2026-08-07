@@ -1,0 +1,20 @@
+Fotos de productos del Punto de Venta
+=====================================
+
+Nombra cada archivo con el ID del producto:
+
+  p1.webp   Recarga 19L            p8.webp   Botellon Nuevo 12L
+  p2.webp   Recarga 12L            p9.webp   Botellon Nuevo 5L
+  p3.webp   Recarga 8L             p10.webp  Tapas Reusables
+  p4.webp   Recarga 5L             p11.webp  Dispensador de Agua
+  p5.webp   Botellon Nuevo 19L     p12.webp  Agarraderos Manuales
+  p6.webp   Bolsa de Hielo         p13.webp  Cepillos de Lavado
+  p7.webp   Helado
+
+Tambien se acepta .png (se intenta despues de .webp).
+Si falta una foto, la tarjeta muestra un icono. No se rompe nada.
+
+Para cambiar una foto en produccion NO hace falta recompilar:
+sube el archivo a public_html/productos/ y listo.
+
+Tamano recomendado: 400x400 px, menos de 30 KB.

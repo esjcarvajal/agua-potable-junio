@@ -13,6 +13,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid
 } from 'recharts'
 import { getLocalDateString } from '../lib/dateUtils'
+import { precioLineaUsd } from '../lib/carritoUtils'
 
 /* ════════════════════════════════════════════════════════════════════
    TOAST
@@ -304,8 +305,7 @@ export default function Reportes() {
             const key = item.producto.id || item.producto.nombre
             if (!map[key]) map[key] = { nombre: item.producto.nombre, cantidad: 0, totalUsd: 0 }
             map[key].cantidad += item.cantidad || 1
-            const precio = item.usarPrepago ? 0 : (item.producto.precio || 0)
-            map[key].totalUsd += precio * (item.cantidad || 1)
+            map[key].totalUsd += precioLineaUsd(item)
           }
         })
       } catch { /* skip */ }
@@ -1225,8 +1225,7 @@ export default function Reportes() {
                 const key = item.producto.id || item.producto.nombre
                 if (!mapProductos[key]) mapProductos[key] = { nombre: item.producto.nombre, cantidad: 0, totalUsd: 0 }
                 mapProductos[key].cantidad += item.cantidad || 1
-                const precio = item.usarPrepago ? 0 : (item.producto.precio || 0)
-                mapProductos[key].totalUsd += precio * (item.cantidad || 1)
+                mapProductos[key].totalUsd += precioLineaUsd(item)
               }
             })
           } catch { /* skip */ }
