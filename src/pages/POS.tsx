@@ -8,7 +8,7 @@ import { useProductos } from '../lib/useProductos'
 import { toPng } from 'html-to-image'
 import {
   Plus, Minus, Trash2, X, Search, ShoppingCart,
-  Truck, CreditCard, Smartphone, Banknote, Wallet, Users, ChevronUp, Clock
+  Truck, CreditCard, Smartphone, Banknote, Wallet, Users, ChevronUp, Clock, Gift
 } from 'lucide-react'
 import { getLocalDateString } from '../lib/dateUtils'
 import { expandirLineasRecibo, subtotalCarritoUsd } from '../lib/carritoUtils'
@@ -74,19 +74,27 @@ interface CarritoItem {
   cantidadPrepago: number
 }
 
+/* Orden de presentacion en el grid del POS (3 columnas).
+   Los IDs NO cambian: se conservan p1..p13 para no romper el historico
+   de ventas ni la asociacion con las fotos /productos/{id}.webp
+     Fila 1: Recarga 19L      | Recarga 12L          | Recarga 8L
+     Fila 2: Recarga 5L       | Botellon Nuevo 19L   | Botellon Nuevo 12L
+     Fila 3: Botellon Nuevo 5L| Bolsa de Hielo       | Helado
+     Fila 4: Tapas Reusables  | Agarraderos Manuales | Dispensador de Agua
+     Fila 5: Cepillos de Lavado | Entrada Manual                          */
 const PRODUCTOS_DEFAULT_POS: Producto[] = [
   { id: 'p1',  nombre: 'Recarga 19L',        precio: 0.80, litros: 19, esRecarga: true },
   { id: 'p2',  nombre: 'Recarga 12L',        precio: 0.75, litros: 12, esRecarga: true },
   { id: 'p3',  nombre: 'Recarga 8L',         precio: 0.60, litros: 8,  esRecarga: true },
   { id: 'p4',  nombre: 'Recarga 5L',         precio: 0.50, litros: 5,  esRecarga: true },
   { id: 'p5',  nombre: 'Botellón Nuevo 19L', precio: 8.00, litros: 0,  esRecarga: false },
-  { id: 'p6',  nombre: 'Bolsa de Hielo',     precio: 2.00, litros: 0,  esRecarga: false },
-  { id: 'p7',  nombre: 'Helado',             precio: 3.50, litros: 0,  esRecarga: false },
   { id: 'p8',  nombre: 'Botellón Nuevo 12L', precio: 0,    litros: 0,  esRecarga: false },
   { id: 'p9',  nombre: 'Botellón Nuevo 5L',  precio: 0,    litros: 0,  esRecarga: false },
+  { id: 'p6',  nombre: 'Bolsa de Hielo',     precio: 2.00, litros: 0,  esRecarga: false },
+  { id: 'p7',  nombre: 'Helado',             precio: 3.50, litros: 0,  esRecarga: false },
   { id: 'p10', nombre: 'Tapas Reusables',    precio: 0,    litros: 0,  esRecarga: false },
-  { id: 'p11', nombre: 'Dispensador de Agua', precio: 0,   litros: 0,  esRecarga: false },
   { id: 'p12', nombre: 'Agarraderos Manuales', precio: 0,  litros: 0,  esRecarga: false },
+  { id: 'p11', nombre: 'Dispensador de Agua', precio: 0,   litros: 0,  esRecarga: false },
   { id: 'p13', nombre: 'Cepillos de Lavado', precio: 0,    litros: 0,  esRecarga: false },
 ]
 
@@ -97,7 +105,7 @@ const TIPOS_BOTELLON_DEFAULT = [
   { litros: 5,  label: '5L',  precioDefault: 0.50 },
 ]
 
-type MetodoPago = 'efectivo_usd' | 'pago_movil' | 'punto_venta' | 'efectivo_ves' | 'prepago_cliente' | 'pago_mixto' | 'post_pago'
+type MetodoPago = 'efectivo_usd' | 'pago_movil' | 'punto_venta' | 'efectivo_ves' | 'prepago_cliente' | 'pago_mixto' | 'post_pago' | 'cortesia'
 
 const METODOS_PAGO: { id: MetodoPago; label: string; icon: typeof Banknote }[] = [
   { id: 'efectivo_usd',   label: 'EFECTIVO USD',    icon: Banknote },
@@ -107,6 +115,7 @@ const METODOS_PAGO: { id: MetodoPago; label: string; icon: typeof Banknote }[] =
   { id: 'prepago_cliente', label: 'PREPAGO CLIENTE', icon: Users },
   { id: 'post_pago',      label: 'POST-PAGO / CRÉDITO', icon: Clock },
   { id: 'pago_mixto',     label: 'PAGO MIXTO',       icon: ShoppingCart },
+  { id: 'cortesia',       label: 'CORTESÍA / DONACIÓN', icon: Gift },
 ]
 
 const METODOS_PAGO_BASICOS = METODOS_PAGO.filter(m => ['efectivo_usd', 'pago_movil', 'punto_venta', 'efectivo_ves', 'post_pago'].includes(m.id))
@@ -119,6 +128,7 @@ const METODO_LABELS_RECIBO: Record<string, string> = {
   prepago_cliente: 'Prepago Cliente',
   pago_mixto:      'Pago Mixto',
   post_pago:       'Crédito / Post-Pago',
+  cortesia:        'Cortesía / Donación',
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -347,19 +357,21 @@ function imprimirRecibo(data: ReciboData, logo?: string) {
 export default function POS() {
   const navigate = useNavigate()
   const store = useAppStore()
-  const { usdToVes, litrosJumbo, tapas, precintos, clientes, prepagos } = store
+  const { usdToVes, tapas, precintos, clientes, prepagos } = store
   const config = useConfig()
   const sesion = useAuthStore(s => s.sesion)
 
   // ── Local state ─────────────────────────────────────────────────
   const [carrito, setCarrito] = useState<CarritoItem[]>([])
   const [isDelivery, setIsDelivery] = useState(false)
-  const [incluirEtiquetas, setIncluirEtiquetas] = useState(false)
   const [costoDelivery, setCostoDelivery] = useState(0)
   const [clienteSeleccionado, setClienteSeleccionado] = useState<any>(null)
   const [busquedaCliente, setBusquedaCliente] = useState('')
   const [metodoPago, setMetodoPago] = useState<MetodoPago | ''>('')
   const [referenciaPagoMovil, setReferenciaPagoMovil] = useState('')
+  /** Motivo de la cortesia. Opcional, pero queda registrado en la venta
+      para que toda salida de inventario sin cobro sea trazable. */
+  const [motivoCortesia, setMotivoCortesia] = useState('')
   // ── Precios sincronizados desde Firebase (reactivo entre dispositivos) ──
   const productosSync = useProductos()
 
@@ -397,6 +409,22 @@ export default function POS() {
   const [prepagoCantidad, setPrepagoCantidad] = useState(1)
   const [prepagoPrecio, setPrepagoPrecio] = useState('1.50')
   const [prepagoMetodo, setPrepagoMetodo] = useState<MetodoPago | ''>('')
+
+  // ── Saldo a favor: modal y aplicacion en el cobro ─────────────
+  const [showSaldoFavor, setShowSaldoFavor] = useState(false)
+  const [showCompensarDeuda, setShowCompensarDeuda] = useState(false)
+  const [saldoFavorMonto, setSaldoFavorMonto] = useState('')
+  const [saldoFavorMetodo, setSaldoFavorMetodo] = useState<MetodoPago | ''>('')
+  /** USD del saldo a favor que se aplican a la venta en curso */
+  const [saldoAplicado, setSaldoAplicado] = useState(0)
+  /** Monto que el cliente entrega (para calcular el vuelto) */
+  const [montoRecibido, setMontoRecibido] = useState('')
+  /** Bolivares realmente recibidos cuando el pago es en Bs.
+      Se guarda tal cual, sin recalcular: la tasa cambia durante el dia
+      y el arqueo debe cuadrar con los billetes, no con una conversion. */
+  const [montoRecibidoVes, setMontoRecibidoVes] = useState('')
+  /** Vuelto de la venta que el cliente decide dejar a favor */
+  const [guardarVuelto, setGuardarVuelto] = useState(false)
 
   // ── Toast helper ───────────────────────────────────────────────
   const showToast = useCallback((mensaje: string, tipo: 'success' | 'error' | 'warning') => {
@@ -464,13 +492,48 @@ export default function POS() {
 
   const totalUsd = subtotalUsd + (isDelivery ? costoDelivery : 0)
 
-  const tankCapacity = 2500
-  const tankPercent = Math.min((litrosJumbo / tankCapacity) * 100, 100)
-  const showInventoryAlert = tapas < 500 || precintos < 500
+  // Saldo a favor disponible del cliente seleccionado
+  const saldoDisponible = clienteSeleccionado
+    ? Math.max(0, parseFloat(clienteSeleccionado.saldo_usd) || 0)
+    : 0
+  // Deuda pendiente del cliente seleccionado
+  const deudaCliente = clienteSeleccionado
+    ? Math.max(0, parseFloat(clienteSeleccionado.deudaTotalUsd) || 0)
+    : 0
+  // El cliente tiene saldo Y deuda a la vez: hay que preguntarle
+  // si quiere usar uno para cancelar el otro.
+  const hayDeudaCompensable = saldoDisponible > 0 && deudaCliente > 0
+  // Cuanto de la deuda se puede cubrir con el saldo actual
+  const deudaCubrible = Math.min(saldoDisponible, deudaCliente)
 
-  const alertItems: string[] = []
-  if (tapas < 500) alertItems.push(`Tapas: ${tapas}`)
-  if (precintos < 500) alertItems.push(`Precintos: ${precintos}`)
+  // En una cortesia el producto se entrega sin cobrar nada
+  const esCortesia = metodoPago === 'cortesia'
+  // Total a cobrar despues de aplicar el saldo a favor
+  const totalACobrar = esCortesia ? 0 : Math.max(0, totalUsd - saldoAplicado)
+  // Vuelto: solo tiene sentido si el cliente entrego mas de lo que debe
+  const vueltoDisponible = (() => {
+    const recibido = parseFloat(montoRecibido) || 0
+    return recibido > totalACobrar ? recibido - totalACobrar : 0
+  })()
+
+
+  // ── Alerta de inventario: dos niveles ─────────────────────────
+  //   AVISO   (ambar)  : por debajo de 500 unidades
+  //   CRITICO (rojo)   : 200 unidades o menos -> la tarjeta parpadea
+  //                      hasta que se reponga el inventario
+  const UMBRAL_AVISO = 500
+  const UMBRAL_CRITICO = 200
+
+  const showInventoryAlert = tapas < UMBRAL_AVISO || precintos < UMBRAL_AVISO
+
+  const criticoItems: string[] = []
+  const avisoItems: string[] = []
+  if (tapas <= UMBRAL_CRITICO) criticoItems.push(`Tapas: ${tapas}`)
+  else if (tapas < UMBRAL_AVISO) avisoItems.push(`Tapas: ${tapas}`)
+  if (precintos <= UMBRAL_CRITICO) criticoItems.push(`Precintos: ${precintos}`)
+  else if (precintos < UMBRAL_AVISO) avisoItems.push(`Precintos: ${precintos}`)
+
+  const hayCritico = criticoItems.length > 0
 
   // ── Handlers ───────────────────────────────────────────────────
   const agregarAlCarrito = (producto: Producto) => {
@@ -551,6 +614,26 @@ export default function POS() {
       .reduce((sum: number, p: any) => sum + ((p.recargas_compradas ?? 0) - (p.recargas_usadas ?? 0)), 0)
   }
 
+  // Al cambiar de cliente, el saldo aplicado deja de ser válido
+  useEffect(() => {
+    setSaldoAplicado(0)
+    setGuardarVuelto(false)
+  }, [clienteSeleccionado?.id])
+
+  // Avisar cuando el cliente tiene saldo a favor Y deuda pendiente,
+  // para que el vendedor pueda preguntarle si desea compensarlos.
+  useEffect(() => {
+    if (!clienteSeleccionado) return
+    const saldo = Math.max(0, parseFloat(clienteSeleccionado.saldo_usd) || 0)
+    const deuda = Math.max(0, parseFloat(clienteSeleccionado.deudaTotalUsd) || 0)
+    if (saldo > 0 && deuda > 0) {
+      showToast(
+        `${clienteSeleccionado.nombre} tiene $${saldo.toFixed(2)} a favor y una deuda de $${deuda.toFixed(2)} — pregúntale si desea usarlo para pagarla`,
+        'warning'
+      )
+    }
+  }, [clienteSeleccionado?.id])
+
   // Al cambiar de cliente, el prepago marcado deja de ser válido
   useEffect(() => {
     setCarrito(prev =>
@@ -573,6 +656,135 @@ export default function POS() {
     setManualNombre('')
     setManualPrecio('')
     setShowManualModal(false)
+  }
+
+  // ── Saldo a favor ──────────────────────────────────────────────
+  /** Aplica el saldo del cliente a la venta en curso (o lo retira) */
+  const toggleAplicarSaldo = () => {
+    if (saldoAplicado > 0) { setSaldoAplicado(0); return }
+    if (!clienteSeleccionado) {
+      showToast('Selecciona un cliente primero', 'error'); return
+    }
+    if (saldoDisponible <= 0) {
+      showToast('Este cliente no tiene saldo a favor', 'error'); return
+    }
+    if (totalUsd <= 0) {
+      showToast('Agrega productos al carrito primero', 'error'); return
+    }
+    // Se aplica hasta donde alcance: nunca mas que el total ni que el saldo
+    const aplicar = Math.min(saldoDisponible, totalUsd)
+    setSaldoAplicado(aplicar)
+    if (aplicar < totalUsd) {
+      showToast(`Saldo aplicado: ${aplicar.toFixed(2)} · Restan ${(totalUsd - aplicar).toFixed(2)} por cobrar`, 'warning')
+    } else {
+      showToast(`Saldo aplicado: ${aplicar.toFixed(2)} — venta cubierta`, 'success')
+    }
+  }
+
+  /** Aplica el saldo a favor del cliente a sus deudas pendientes */
+  const compensarDeudaConSaldo = async () => {
+    if (!clienteSeleccionado) return
+
+    // Releer del store: el saldo pudo cambiar desde otra caja
+    const clienteActual = store.clientes.find((c: any) => c.id === clienteSeleccionado.id)
+    const saldoActual = Math.max(0, parseFloat(clienteActual?.saldo_usd) || 0)
+    if (saldoActual <= 0) {
+      showToast('El cliente ya no tiene saldo a favor', 'error')
+      setShowCompensarDeuda(false)
+      return
+    }
+
+    // Deudas pendientes, de la mas antigua a la mas reciente
+    const pendientes = store.getDeudasCliente(clienteSeleccionado.id)
+      .filter((d: any) => d.estado === 'pendiente')
+      .sort((a: any, b: any) => String(a.fechaVencimiento).localeCompare(String(b.fechaVencimiento)))
+
+    if (pendientes.length === 0) {
+      showToast('Este cliente no tiene deudas pendientes', 'error')
+      setShowCompensarDeuda(false)
+      return
+    }
+
+    let restante = saldoActual
+    let saldadas = 0
+    let abonadas = 0
+    let totalAplicado = 0
+
+    // Se abona de la mas antigua a la mas reciente. Si el saldo no cubre
+    // una deuda completa, se abona parcialmente y esa deuda sigue
+    // pendiente con el resto.
+    for (const d of pendientes) {
+      if (restante <= 0.001) break
+      const total = Math.max(0, Number(d.montoUsd) || 0)
+      const yaPagado = Math.max(0, Number(d.montoPagadoUsd) || 0)
+      const pendiente = Math.max(0, total - yaPagado)
+      if (pendiente <= 0) continue
+
+      const aAplicar = Math.min(restante, pendiente)
+      const aplicado = await store.abonarDeuda(
+        d.id, aAplicar, 'SALDO A FAVOR', 'Aplicado desde saldo a favor del cliente'
+      )
+      if (aplicado <= 0) continue
+
+      await store.consumirSaldoFavor(clienteSeleccionado.id, aplicado)
+      restante -= aplicado
+      totalAplicado += aplicado
+      if (aplicado >= pendiente - 0.001) saldadas++
+      else abonadas++
+    }
+
+    setShowCompensarDeuda(false)
+
+    if (totalAplicado <= 0) {
+      showToast('No se pudo aplicar el saldo a ninguna deuda', 'warning')
+      return
+    }
+
+    const partes = []
+    if (saldadas > 0) partes.push(`${saldadas} deuda(s) saldada(s)`)
+    if (abonadas > 0) partes.push(`${abonadas} con abono parcial`)
+    showToast(
+      `${partes.join(' · ')} por $${totalAplicado.toFixed(2)} · Saldo restante: $${restante.toFixed(2)}`,
+      'success'
+    )
+  }
+
+  /** Registra un abono directo al saldo a favor, sin comprar producto */
+  const registrarSaldoFavor = async () => {
+    if (!clienteSeleccionado) {
+      showToast('Selecciona un cliente primero', 'error'); return
+    }
+    const monto = parseFloat(saldoFavorMonto) || 0
+    if (monto <= 0) {
+      showToast('Ingresa un monto mayor a cero', 'error'); return
+    }
+    if (!saldoFavorMetodo) {
+      showToast('Selecciona un método de pago', 'error'); return
+    }
+
+    await store.abonarSaldoFavor(clienteSeleccionado.id, monto)
+
+    // Se registra como venta para que aparezca en el cierre de caja:
+    // es dinero que entro fisicamente a la caja.
+    await store.agregarVenta({
+      id: crypto.randomUUID(),
+      fecha: getLocalDateString(),
+      hora: new Date().toLocaleTimeString(),
+      cliente_id: clienteSeleccionado.id,
+      cliente_nombre: clienteSeleccionado.nombre || 'Cliente',
+      items_json: JSON.stringify([{ tipo: 'ABONO_SALDO', monto_usd: monto }]),
+      total_usd: monto,
+      tasa_bcv: store.tasaBcv.valor,
+      metodo_pago: saldoFavorMetodo,
+      es_delivery: false,
+      costo_delivery_usd: 0,
+      notas: `ABONO A SALDO A FAVOR: $${monto.toFixed(2)}`,
+    })
+
+    showToast(`Saldo a favor registrado — $${monto.toFixed(2)} para ${clienteSeleccionado.nombre}`, 'success')
+    setShowSaldoFavor(false)
+    setSaldoFavorMonto('')
+    setSaldoFavorMetodo('')
   }
 
   // ── Registrar Prepago ──────────────────────────────────────────
@@ -682,6 +894,21 @@ export default function POS() {
       }
     }
 
+    // 4.7. Validar saldo a favor contra la disponibilidad ACTUAL
+    // (otra caja pudo consumirlo mientras esta venta estaba abierta)
+    if (saldoAplicado > 0) {
+      if (!clienteSeleccionado) {
+        showToast('Selecciona un cliente para aplicar su saldo', 'error')
+        return
+      }
+      const disponibleAhora = Math.max(0, parseFloat(clienteSeleccionado.saldo_usd) || 0)
+      if (saldoAplicado > disponibleAhora) {
+        showToast(`Saldo insuficiente: $${disponibleAhora.toFixed(2)} disponible(s)`, 'error')
+        setSaldoAplicado(0)
+        return
+      }
+    }
+
     // Generar número de orden secuencial diario
     const ventasHoy = store.ventas.filter((v: any) => v.fecha === getLocalDateString())
     const nuevoOrden = String(ventasHoy.length + 1).padStart(3, '0')
@@ -695,13 +922,35 @@ export default function POS() {
       cliente_id: clienteSeleccionado?.id || '',
       cliente_nombre: clienteSeleccionado?.nombre || 'Cliente general',
       items_json: JSON.stringify(carrito),
-      total_usd: totalUsd,
+      // En cortesia el total facturado es 0: no entra dinero.
+      // El inventario SI se descuenta (pasos 7, 8 y 8.5 mas abajo).
+      total_usd: esCortesia ? 0 : totalUsd,
+      // Valor de lo entregado, para saber cuanto se regalo
+      valor_cortesia_usd: esCortesia ? parseFloat(totalUsd.toFixed(2)) : 0,
+      // Bolivares realmente recibidos. Si el vendedor no los teclea,
+      // se usa la conversion a la tasa de ESTE momento (no la de cierre).
+      total_ves: (() => {
+        const esEnBs = metodoPago === 'efectivo_ves' || metodoPago === 'pago_movil' || metodoPago === 'punto_venta'
+        if (!esEnBs) return 0
+        const tecleado = parseFloat(montoRecibidoVes) || 0
+        return tecleado > 0
+          ? parseFloat(tecleado.toFixed(2))
+          : parseFloat((totalACobrar * (store.tasaBcv.valor || 0)).toFixed(2))
+      })(),
+      // Porcion del total cubierta con saldo a favor del cliente
+      saldo_aplicado_usd: saldoAplicado,
       tasa_bcv: store.tasaBcv.valor,
       metodo_pago: metodoPago,
       es_delivery: isDelivery,
       estado_delivery: isDelivery ? 'en_transito' : 'completado',
       costo_delivery_usd: costoDelivery,
-      notas: referenciaPagoMovil ? `Ref: ${referenciaPagoMovil}` : '',
+      notas: [
+        referenciaPagoMovil ? `Ref: ${referenciaPagoMovil}` : '',
+        saldoAplicado > 0 ? `Saldo a favor aplicado: $${saldoAplicado.toFixed(2)}` : '',
+        esCortesia
+          ? `CORTESÍA${motivoCortesia.trim() ? `: ${motivoCortesia.trim()}` : ' (sin motivo indicado)'} · Valor entregado: $${totalUsd.toFixed(2)}`
+          : '',
+      ].filter(Boolean).join(' · '),
     }
 
     // 6. Guardar venta en store
@@ -722,15 +971,15 @@ export default function POS() {
     if (totalLitros > 0) store.descontarLitros(totalLitros)
 
     // 8. Descontar insumos con reglas de negocio correctas:
-    //    - Tapas: solo botellones de 19L y 12L (no 8L ni 5L)
-    //    - Precintos: solo si es delivery, y solo para 19L y 12L
-    //    - Etiquetas: opcional desde el UI
+    //    - Tapas:     solo recargas de 19L y 12L (no 8L ni 5L)
+    //    - Precintos: solo en delivery, y solo para 19L y 12L
+    //    - Etiquetas: solo en delivery, y solo para 19L y 12L
     const tapasUsadas = carrito
       .filter(item => item.producto.esRecarga &&
         (item.producto.litros === 19 || item.producto.litros === 12))
       .reduce((sum, item) => sum + item.cantidad, 0)
     const precintosUsados = isDelivery ? tapasUsadas : 0
-    const etiquetasUsadas = (isDelivery || incluirEtiquetas) ? tapasUsadas : 0
+    const etiquetasUsadas = isDelivery ? tapasUsadas : 0
     if (tapasUsadas > 0 || precintosUsados > 0 || etiquetasUsadas > 0) {
       store.descontarInsumos(tapasUsadas, precintosUsados, etiquetasUsadas)
     }
@@ -805,11 +1054,26 @@ export default function POS() {
         store.actualizarCliente(clienteSeleccionado.id, { deudaTotalUsd: (clienteSeleccionado.deudaTotalUsd || 0) + totalUsd })
     }
 
+    // 9.7. Consumir el saldo a favor aplicado
+    // (en cortesia no se consume: no se cobro nada)
+    if (!esCortesia && saldoAplicado > 0 && clienteSeleccionado) {
+      await store.consumirSaldoFavor(clienteSeleccionado.id, saldoAplicado)
+    }
+
+    // 9.8. Guardar el vuelto como saldo a favor (si se marco)
+    if (guardarVuelto && vueltoDisponible > 0 && clienteSeleccionado) {
+      await store.abonarSaldoFavor(clienteSeleccionado.id, vueltoDisponible)
+      showToast(`Vuelto guardado a favor de ${clienteSeleccionado.nombre}: $${vueltoDisponible.toFixed(2)}`, 'success')
+    }
+
     // 10. Preparar modal de éxito
     setUltimaVenta({
       orden: nuevoOrden,
-      totalUsd,
-      totalVes: usdToVes(totalUsd),
+      totalUsd: esCortesia ? 0 : totalUsd,
+      totalVes: usdToVes(esCortesia ? 0 : totalUsd),
+      esCortesia,
+      valorCortesia: esCortesia ? totalUsd : 0,
+      motivoCortesia: esCortesia ? motivoCortesia.trim() : '',
       metodo: metodoPago,
       vencimiento: vencimientoStr,
       // Datos del recibo
@@ -831,10 +1095,20 @@ export default function POS() {
     setReferenciaPagoMovil('')
     setCostoDelivery(0)
     setShowDrawer(false)
+    setSaldoAplicado(0)
+    setGuardarVuelto(false)
+    setMontoRecibido('')
+    setMontoRecibidoVes('')
+    setMotivoCortesia('')
 
     // 11. Mostrar éxito
     setShowExitoModal(true)
-    showToast(`¡Venta registrada — $${totalUsd.toFixed(2)} USD`, 'success')
+    showToast(
+      esCortesia
+        ? `Cortesía registrada — valor entregado $${totalUsd.toFixed(2)}`
+        : `¡Venta registrada — $${totalUsd.toFixed(2)} USD`,
+      'success'
+    )
   }
 
   const limpiarTodo = () => {
@@ -862,7 +1136,7 @@ export default function POS() {
             <h1 className="font-manrope text-2xl font-bold text-onSurface dark:text-[#e4e6f0]">Punto de Venta</h1>
             <p className="text-gray-500 dark:text-gray-400 text-sm font-inter mt-0.5">Agua Potable La Campiña — {config.nombreEstacion}</p>
           </div>
-          {/* Toggles (Delivery / Etiquetas) */}
+          {/* Toggle de delivery */}
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="flex items-center gap-3 bg-white dark:bg-[#1e2235] rounded-xl px-4 py-2.5 shadow-sm border border-gray-100 dark:border-[#2d3148]">
               <span className="text-xs font-manrope font-bold text-gray-500 dark:text-gray-400 tracking-wider">¿ES DELIVERY?</span>
@@ -880,28 +1154,11 @@ export default function POS() {
               </button>
               {isDelivery && <Truck size={16} className="text-primary" />}
             </div>
-
-            <div className={`flex items-center gap-3 bg-white dark:bg-[#1e2235] rounded-xl px-4 py-2.5 shadow-sm border border-gray-100 dark:border-[#2d3148] ${isDelivery ? 'opacity-50 pointer-events-none' : ''}`}>
-              <span className="text-xs font-manrope font-bold text-gray-500 dark:text-gray-400 tracking-wider">INCLUIR ETIQUETAS</span>
-              <button
-                onClick={() => !isDelivery && setIncluirEtiquetas(!incluirEtiquetas)}
-                disabled={isDelivery}
-                className={`relative w-12 h-6 rounded-full transition-colors duration-300 ${
-                  (isDelivery || incluirEtiquetas) ? 'bg-green-600' : 'bg-gray-300'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-md transition-transform duration-300 ${
-                    (isDelivery || incluirEtiquetas) ? 'translate-x-6' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
           </div>
         </div>
 
         {/* Grid de productos */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-3 mb-6">
           {productosList.map(p => (
             <button
               key={p.id}
@@ -946,33 +1203,41 @@ export default function POS() {
 
         {/* Cards de estado */}
         <div className="flex flex-col gap-4">
-          {/* Card tanque */}
-          <div className="bg-primary rounded-xl p-5 text-white shadow-md">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-manrope font-bold text-base">Estado del Tanque Principal</h3>
-              <span className="font-grotesk text-sm font-bold opacity-80">{tankPercent.toFixed(0)}% capacidad</span>
-            </div>
-            <div className="font-grotesk text-2xl font-bold mb-3">
-              {litrosJumbo.toLocaleString('es-VE')} L <span className="text-sm font-normal opacity-70">disponibles</span>
-            </div>
-            <div className="w-full bg-white/20 rounded-full h-2.5 overflow-hidden">
-              <div
-                className="bg-white h-full rounded-full transition-all duration-1000 ease-out"
-                style={{ width: `${tankPercent}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Card alerta inventario */}
+          {/* Card alerta inventario — rojo parpadeante si es critico */}
           {showInventoryAlert && (
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-xl p-5 shadow-sm">
+            <div
+              role="alert"
+              aria-live={hayCritico ? 'assertive' : 'polite'}
+              className={
+                hayCritico
+                  ? 'bg-red-50 dark:bg-red-900/25 border-2 border-red-500 dark:border-red-500 rounded-xl p-5 shadow-sm animate-parpadeoAlerta motion-reduce:animate-none'
+                  : 'bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-xl p-5 shadow-sm'
+              }
+            >
               <div className="flex items-start gap-3">
-                <span className="text-2xl">⚠</span>
+                <span className="text-2xl">{hayCritico ? '🚨' : '⚠'}</span>
                 <div>
-                  <h3 className="font-manrope font-bold text-amber-800 dark:text-amber-500 text-base mb-1">Alerta de Inventario</h3>
-                  <p className="text-amber-700 dark:text-amber-600 text-sm font-inter">
-                    Stock bajo: {alertItems.join(' · ')}
-                  </p>
+                  <h3 className={`font-manrope font-bold text-base mb-1 ${
+                    hayCritico
+                      ? 'text-red-700 dark:text-red-400'
+                      : 'text-amber-800 dark:text-amber-500'
+                  }`}>
+                    {hayCritico ? 'Stock Crítico' : 'Alerta de Inventario'}
+                  </h3>
+                  {criticoItems.length > 0 && (
+                    <p className="text-red-700 dark:text-red-400 text-sm font-inter font-bold">
+                      Reponer ya: {criticoItems.join(' · ')}
+                    </p>
+                  )}
+                  {avisoItems.length > 0 && (
+                    <p className={`text-sm font-inter ${
+                      hayCritico
+                        ? 'text-amber-700 dark:text-amber-500 mt-0.5'
+                        : 'text-amber-700 dark:text-amber-600'
+                    }`}>
+                      Stock bajo: {avisoItems.join(' · ')}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -994,6 +1259,22 @@ export default function POS() {
           clientePrepagosDetalle={clientePrepagosDetalle}
           clienteNivel={clienteNivel}
           onShowPrepago={() => setShowPrepago(true)}
+          onShowSaldoFavor={() => setShowSaldoFavor(true)}
+          hayDeudaCompensable={hayDeudaCompensable}
+          deudaCliente={deudaCliente}
+          deudaCubrible={deudaCubrible}
+          onCompensarDeuda={() => setShowCompensarDeuda(true)}
+          saldoDisponible={saldoDisponible}
+          saldoAplicado={saldoAplicado}
+          onToggleSaldo={toggleAplicarSaldo}
+          montoRecibido={montoRecibido}
+          setMontoRecibido={setMontoRecibido}
+          montoRecibidoVes={montoRecibidoVes}
+          setMontoRecibidoVes={setMontoRecibidoVes}
+          vueltoDisponible={vueltoDisponible}
+          guardarVuelto={guardarVuelto}
+          setGuardarVuelto={setGuardarVuelto}
+          totalACobrar={totalACobrar}
           getPrepagoDisponibles={getPrepagoDisponibles}
           cambiarCantidad={cambiarCantidad}
           eliminarItem={eliminarItem}
@@ -1008,6 +1289,8 @@ export default function POS() {
           setMetodoPago={setMetodoPago}
           referenciaPagoMovil={referenciaPagoMovil}
           setReferenciaPagoMovil={setReferenciaPagoMovil}
+          motivoCortesia={motivoCortesia}
+          setMotivoCortesia={setMotivoCortesia}
           completarTransaccion={completarTransaccion}
           usdToVes={usdToVes}
         />
@@ -1052,6 +1335,22 @@ export default function POS() {
                 clientePrepagosDetalle={clientePrepagosDetalle}
                 clienteNivel={clienteNivel}
                 onShowPrepago={() => setShowPrepago(true)}
+                onShowSaldoFavor={() => setShowSaldoFavor(true)}
+                hayDeudaCompensable={hayDeudaCompensable}
+                deudaCliente={deudaCliente}
+                deudaCubrible={deudaCubrible}
+                onCompensarDeuda={() => setShowCompensarDeuda(true)}
+                saldoDisponible={saldoDisponible}
+                saldoAplicado={saldoAplicado}
+                onToggleSaldo={toggleAplicarSaldo}
+                montoRecibido={montoRecibido}
+                setMontoRecibido={setMontoRecibido}
+                montoRecibidoVes={montoRecibidoVes}
+                setMontoRecibidoVes={setMontoRecibidoVes}
+                vueltoDisponible={vueltoDisponible}
+                guardarVuelto={guardarVuelto}
+                setGuardarVuelto={setGuardarVuelto}
+                totalACobrar={totalACobrar}
                 getPrepagoDisponibles={getPrepagoDisponibles}
                 cambiarCantidad={cambiarCantidad}
                 eliminarItem={eliminarItem}
@@ -1066,6 +1365,8 @@ export default function POS() {
                 setMetodoPago={setMetodoPago}
                 referenciaPagoMovil={referenciaPagoMovil}
                 setReferenciaPagoMovil={setReferenciaPagoMovil}
+                motivoCortesia={motivoCortesia}
+                setMotivoCortesia={setMotivoCortesia}
                 completarTransaccion={completarTransaccion}
                 usdToVes={usdToVes}
               />
@@ -1119,6 +1420,170 @@ export default function POS() {
                 style={{ background: 'linear-gradient(135deg, #005e97, #0077be)' }}
               >
                 Agregar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────── MODAL COMPENSAR DEUDA CON SALDO ────────────────── */}
+      {showCompensarDeuda && clienteSeleccionado && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowCompensarDeuda(false)} />
+          <div className="relative bg-white dark:bg-[#1e2235] rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="font-manrope font-bold text-lg text-onSurface dark:text-[#e4e6f0]">Pagar deuda con saldo</h3>
+                <p className="font-inter text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+                  {clienteSeleccionado.nombre}
+                </p>
+              </div>
+              <button onClick={() => setShowCompensarDeuda(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-[#5bb3e8]">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-xl px-4 py-3 mb-4">
+              <p className="font-inter text-sm text-amber-800 dark:text-amber-500">
+                Confirma con el cliente antes de continuar. Esta acción usa su
+                dinero a favor para cancelar deudas pendientes.
+              </p>
+            </div>
+
+            <div className="space-y-2 mb-5">
+              <div className="flex justify-between items-center text-sm font-inter">
+                <span className="text-gray-500 dark:text-gray-400">Saldo a favor</span>
+                <span className="font-grotesk font-bold text-green-700 dark:text-green-400">
+                  ${saldoDisponible.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-sm font-inter">
+                <span className="text-gray-500 dark:text-gray-400">Deuda pendiente</span>
+                <span className="font-grotesk font-bold text-red-600 dark:text-red-400">
+                  ${deudaCliente.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-sm font-inter pt-2 border-t border-gray-100 dark:border-[#2d3148]">
+                <span className="text-gray-600 dark:text-gray-300 font-bold">Se aplicará hasta</span>
+                <span className="font-grotesk font-bold text-primary dark:text-[#5bb3e8]">
+                  ${deudaCubrible.toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            <p className="font-inter text-[11px] text-gray-400 dark:text-gray-500 mb-5">
+              El saldo se aplica de la deuda más antigua a la más reciente.
+              Si no alcanza para cubrir una deuda completa, se registra como
+              abono parcial y esa deuda sigue pendiente por el resto.
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowCompensarDeuda(false)}
+                className="flex-1 py-3 rounded-xl border border-gray-200 dark:border-[#2d3148] font-manrope font-bold text-sm text-gray-600 dark:text-gray-400
+                  hover:bg-gray-50 dark:hover:bg-[#2d3148] transition-colors"
+              >
+                No, cancelar
+              </button>
+              <button
+                onClick={compensarDeudaConSaldo}
+                className="flex-1 py-3 rounded-xl bg-amber-600 text-white font-manrope font-bold text-sm hover:bg-amber-700 transition-colors"
+              >
+                Sí, pagar deuda
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ──────────────────────── MODAL SALDO A FAVOR ───────────────────── */}
+      {showSaldoFavor && clienteSeleccionado && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowSaldoFavor(false)} />
+          <div className="relative bg-white dark:bg-[#1e2235] rounded-2xl shadow-2xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="font-manrope font-bold text-lg text-onSurface dark:text-[#e4e6f0]">Saldo a Favor</h3>
+                <p className="font-inter text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+                  {clienteSeleccionado.nombre}
+                </p>
+              </div>
+              <button onClick={() => setShowSaldoFavor(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-[#5bb3e8]">
+                <X size={20} />
+              </button>
+            </div>
+
+            <p className="font-inter text-sm text-gray-500 dark:text-gray-400 mb-4">
+              Registra dinero a favor del cliente sin asignarlo a ningún producto.
+              Podrá usarlo en cualquier compra futura.
+            </p>
+
+            {saldoDisponible > 0 && (
+              <div className="bg-green-50 dark:bg-green-900/20 rounded-xl px-4 py-3 mb-4">
+                <span className="font-inter text-sm text-green-700 dark:text-green-400">
+                  Saldo actual: <span className="font-grotesk font-bold">${saldoDisponible.toFixed(2)}</span>
+                </span>
+              </div>
+            )}
+
+            <div className="mb-4">
+              <label className="block text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                MONTO A ABONAR (USD)
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                value={saldoFavorMonto}
+                onChange={e => setSaldoFavorMonto(e.target.value)}
+                className="w-full border border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-xl px-4 py-3 font-grotesk font-bold text-lg
+                  outline-none focus:border-primary dark:focus:border-[#5bb3e8] text-gray-800 dark:text-[#e4e6f0]"
+              />
+              {(parseFloat(saldoFavorMonto) || 0) > 0 && (
+                <p className="font-grotesk text-sm text-primary dark:text-[#5bb3e8] mt-1.5">
+                  {usdToVes(parseFloat(saldoFavorMonto) || 0)}
+                </p>
+              )}
+            </div>
+
+            <div className="mb-5">
+              <label className="block text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                MÉTODO DE PAGO
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {METODOS_PAGO.filter(m => ['efectivo_usd', 'pago_movil', 'punto_venta', 'efectivo_ves'].includes(m.id)).map(m => {
+                  const isActive = saldoFavorMetodo === m.id
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setSaldoFavorMetodo(m.id)}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-xs font-manrope font-bold transition-colors ${
+                        isActive
+                          ? 'bg-primary text-white border-primary'
+                          : 'bg-white dark:bg-[#1a1d27] text-gray-600 dark:text-gray-400 border-gray-200 dark:border-[#2d3148] hover:border-primary'
+                      }`}
+                    >
+                      <m.icon size={14} /> {m.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowSaldoFavor(false)}
+                className="flex-1 py-3 rounded-xl border border-gray-200 dark:border-[#2d3148] font-manrope font-bold text-sm text-gray-600 dark:text-gray-400
+                  hover:bg-gray-50 dark:hover:bg-[#2d3148] transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={registrarSaldoFavor}
+                className="flex-1 py-3 rounded-xl bg-primary text-white font-manrope font-bold text-sm hover:bg-primaryContainer transition-colors"
+              >
+                Registrar Saldo
               </button>
             </div>
           </div>
@@ -1434,6 +1899,22 @@ interface OrderPanelProps {
   clientePrepagosDetalle: { tipo: string; qty: number }[]
   clienteNivel: { label: string; color: string; bg: string } | null
   onShowPrepago: () => void
+  onShowSaldoFavor: () => void
+  hayDeudaCompensable: boolean
+  deudaCliente: number
+  deudaCubrible: number
+  onCompensarDeuda: () => void
+  saldoDisponible: number
+  saldoAplicado: number
+  onToggleSaldo: () => void
+  montoRecibido: string
+  setMontoRecibido: (v: string) => void
+  montoRecibidoVes: string
+  setMontoRecibidoVes: (v: string) => void
+  vueltoDisponible: number
+  guardarVuelto: boolean
+  setGuardarVuelto: (v: boolean) => void
+  totalACobrar: number
   getPrepagoDisponibles: (item: CarritoItem) => number
   cambiarCantidad: (id: string, delta: number) => void
   eliminarItem: (id: string) => void
@@ -1448,6 +1929,8 @@ interface OrderPanelProps {
   setMetodoPago: (m: MetodoPago | '') => void
   referenciaPagoMovil: string
   setReferenciaPagoMovil: (v: string) => void
+  motivoCortesia: string
+  setMotivoCortesia: (v: string) => void
   completarTransaccion: () => void
   usdToVes: (n: number) => string
 }
@@ -1456,11 +1939,15 @@ function OrderPanel({
   carrito, ordenNumero, busquedaCliente, setBusquedaCliente,
   clientesFilterResults, clienteSeleccionado, setClienteSeleccionado,
   clientePrepagosCount, clientePrepagosDetalle, clienteNivel,
-  onShowPrepago, getPrepagoDisponibles,
+  onShowPrepago, onShowSaldoFavor, saldoDisponible, saldoAplicado, onToggleSaldo,
+  hayDeudaCompensable, deudaCliente, deudaCubrible, onCompensarDeuda,
+  montoRecibido, setMontoRecibido, montoRecibidoVes, setMontoRecibidoVes,
+  vueltoDisponible, guardarVuelto, setGuardarVuelto,
+  totalACobrar, getPrepagoDisponibles,
   cambiarCantidad, eliminarItem, aplicarPrepago,
   itemTienePrepago, subtotalUsd, totalUsd, isDelivery, costoDelivery,
   setCostoDelivery, metodoPago, setMetodoPago, referenciaPagoMovil,
-  setReferenciaPagoMovil, completarTransaccion, usdToVes,
+  setReferenciaPagoMovil, motivoCortesia, setMotivoCortesia, completarTransaccion, usdToVes,
 }: OrderPanelProps) {
   const canComplete = carrito.length > 0 && metodoPago !== ''
   const prepagoDisponible = clientePrepagosCount > 0
@@ -1502,6 +1989,14 @@ function OrderPanel({
                 <Plus size={12} /> Prepago
               </button>
               <button
+                onClick={onShowSaldoFavor}
+                title="Registrar saldo a favor sin comprar producto"
+                className="text-[11px] font-manrope font-bold text-green-700 dark:text-green-400 bg-white dark:bg-[#1e2235] border border-green-200 dark:border-[#2d3148] rounded-lg px-2 py-1
+                  hover:bg-green-50 dark:hover:bg-[#2d3148] transition-colors flex items-center gap-1 flex-shrink-0"
+              >
+                <Plus size={12} /> Saldo
+              </button>
+              <button
                 onClick={() => { setClienteSeleccionado(null); setBusquedaCliente('') }}
                 className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 flex-shrink-0"
               >
@@ -1523,6 +2018,37 @@ function OrderPanel({
                     SALDO: ${parseFloat(clienteSeleccionado.saldo_usd).toFixed(2)}
                   </span>
                 )}
+                {deudaCliente > 0 && (
+                  <span className="text-[10px] font-bold font-grotesk px-2 py-0.5 rounded-full text-white"
+                    style={{ background: '#dc2626' }}>
+                    DEUDA: ${deudaCliente.toFixed(2)}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Cliente con saldo Y deuda: preguntarle si desea compensar */}
+            {hayDeudaCompensable && (
+              <div className="mt-2 mx-1 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700/50 rounded-xl px-3 py-2.5">
+                <div className="flex items-start gap-2">
+                  <span className="text-base leading-none mt-0.5">⚠</span>
+                  <div className="min-w-0">
+                    <p className="font-manrope font-bold text-xs text-amber-800 dark:text-amber-500">
+                      Este cliente tiene deuda pendiente
+                    </p>
+                    <p className="font-inter text-[11px] text-amber-700 dark:text-amber-600 mt-0.5">
+                      Tiene ${saldoDisponible.toFixed(2)} a favor y debe ${deudaCliente.toFixed(2)}.
+                      Pregúntale si desea usar su saldo para pagarla.
+                    </p>
+                    <button
+                      onClick={onCompensarDeuda}
+                      className="mt-2 w-full text-center text-[11px] font-bold font-manrope py-1.5 rounded-lg
+                        bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+                    >
+                      Pagar deuda con su saldo (${deudaCubrible.toFixed(2)})
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -1671,16 +2197,106 @@ function OrderPanel({
             <span className="font-inter font-bold text-green-600 dark:text-green-500 text-sm">Gratis</span>
           )}
         </div>
+        {/* Saldo a favor aplicado */}
+        {saldoAplicado > 0 && (
+          <div className="flex justify-between items-center text-sm font-inter">
+            <span className="text-green-700 dark:text-green-400">Saldo a favor aplicado</span>
+            <span className="font-grotesk font-bold text-green-700 dark:text-green-400">
+              −${saldoAplicado.toFixed(2)}
+            </span>
+          </div>
+        )}
         <div className="border-t border-gray-200 dark:border-[#2d3148] pt-3 mt-3">
           <div className="flex justify-between items-baseline mb-1">
             <span className="font-manrope font-bold text-base text-gray-600 dark:text-gray-300">TOTAL A PAGAR</span>
           </div>
           <div className="font-grotesk text-[28px] font-bold text-onSurface dark:text-[#e4e6f0] leading-tight">
-            ${totalUsd.toFixed(2)}
+            ${totalACobrar.toFixed(2)}
           </div>
           <div className="font-grotesk text-base text-primary dark:text-[#5bb3e8] font-medium">
-            {usdToVes(totalUsd)}
+            {usdToVes(totalACobrar)}
           </div>
+
+          {/* Botón para aplicar el saldo a favor del cliente */}
+          {saldoDisponible > 0 && totalUsd > 0 && (
+            <button
+              onClick={onToggleSaldo}
+              className={`mt-3 w-full text-center text-xs font-bold font-manrope py-2 rounded-lg transition-colors ${
+                saldoAplicado > 0
+                  ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                  : 'bg-gray-100 dark:bg-[#1e2235] text-gray-600 dark:text-gray-400 hover:bg-green-50 dark:hover:bg-[#2d3148] hover:text-green-700 border border-transparent dark:border-[#2d3148]'
+              }`}
+            >
+              {saldoAplicado > 0
+                ? `✓ Saldo aplicado ($${saldoAplicado.toFixed(2)}) — quitar`
+                : `Usar saldo a favor ($${saldoDisponible.toFixed(2)} disponible)`}
+            </button>
+          )}
+
+          {/* Bolivares recibidos — solo para pagos en Bs */}
+          {totalACobrar > 0 && ['efectivo_ves', 'pago_movil', 'punto_venta'].includes(metodoPago) && (
+            <div className="mt-3 pt-3 border-t border-gray-100 dark:border-[#2d3148]">
+              <div className="flex justify-between items-center text-sm font-inter mb-1">
+                <span className="text-gray-500 dark:text-gray-400">Bolívares recibidos</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder={usdToVes(totalACobrar).replace(/[^\d,.]/g, '')}
+                  value={montoRecibidoVes}
+                  onChange={e => setMontoRecibidoVes(e.target.value)}
+                  className="w-28 text-right border border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-lg px-2 py-1 font-grotesk font-bold text-sm
+                    outline-none focus:border-primary dark:focus:border-[#5bb3e8] text-gray-800 dark:text-[#e4e6f0]"
+                />
+              </div>
+              <p className="font-inter text-[10px] text-gray-400 dark:text-gray-500">
+                Si se deja vacío se usa la conversión del momento
+              </p>
+            </div>
+          )}
+
+          {/* Monto recibido y vuelto */}
+          {totalACobrar > 0 && (
+            <div className="mt-3 pt-3 border-t border-gray-100 dark:border-[#2d3148]">
+              <div className="flex justify-between items-center text-sm font-inter mb-1">
+                <span className="text-gray-500 dark:text-gray-400">Monto recibido</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={montoRecibido}
+                  onChange={e => setMontoRecibido(e.target.value)}
+                  className="w-24 text-right border border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-lg px-2 py-1 font-grotesk font-bold text-sm
+                    outline-none focus:border-primary dark:focus:border-[#5bb3e8] text-gray-800 dark:text-[#e4e6f0]"
+                />
+              </div>
+              {vueltoDisponible > 0 && (
+                <>
+                  <div className="flex justify-between items-center text-sm font-inter">
+                    <span className="text-gray-500 dark:text-gray-400">Vuelto</span>
+                    <span className="font-grotesk font-bold text-amber-600 dark:text-amber-500">
+                      ${vueltoDisponible.toFixed(2)}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setGuardarVuelto(!guardarVuelto)}
+                    disabled={!clienteSeleccionado}
+                    title={!clienteSeleccionado ? 'Selecciona un cliente para guardar el vuelto' : ''}
+                    className={`mt-2 w-full text-center text-xs font-bold font-manrope py-2 rounded-lg transition-colors ${
+                      guardarVuelto
+                        ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                        : 'bg-gray-100 dark:bg-[#1e2235] text-gray-600 dark:text-gray-400 hover:bg-green-50 dark:hover:bg-[#2d3148] disabled:opacity-40 disabled:cursor-not-allowed border border-transparent dark:border-[#2d3148]'
+                    }`}
+                  >
+                    {guardarVuelto
+                      ? `✓ Se guardará a favor del cliente`
+                      : `Dejar $${vueltoDisponible.toFixed(2)} a favor del cliente`}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1715,6 +2331,27 @@ function OrderPanel({
             )
           })}
         </div>
+
+        {/* Cortesía: aviso y motivo */}
+        {metodoPago === 'cortesia' && (
+          <div className="mt-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-xl p-3">
+            <p className="font-manrope font-bold text-xs text-amber-800 dark:text-amber-500 mb-1">
+              Entrega sin cobro
+            </p>
+            <p className="font-inter text-[11px] text-amber-700 dark:text-amber-600 mb-2.5">
+              El producto se descuenta del inventario y el total facturado es
+              $0.00. Valor de lo entregado: <span className="font-grotesk font-bold">${totalUsd.toFixed(2)}</span>
+            </p>
+            <input
+              type="text"
+              value={motivoCortesia}
+              onChange={e => setMotivoCortesia(e.target.value)}
+              placeholder="Motivo (opcional): donación, cortesía, reposición…"
+              className="w-full border border-amber-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] text-gray-800 dark:text-[#e4e6f0]
+                rounded-lg px-3 py-2 text-xs font-inter outline-none focus:border-amber-500 transition-colors"
+            />
+          </div>
+        )}
 
         {/* Pago móvil: referencia */}
         {metodoPago === 'pago_movil' && (

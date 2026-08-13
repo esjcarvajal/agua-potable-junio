@@ -8,6 +8,8 @@ export interface DeudaPostpago {
     clienteNombre: string
     ventaId: string
     montoUsd: number
+    /** Acumulado abonado. Ausente en deudas anteriores a esta version. */
+    montoPagadoUsd?: number
     fechaVenta: string
     fechaVencimiento: string
     ciclo: 7 | 15 | 30
@@ -83,6 +85,12 @@ interface AppState {
     // POST-PAGO DEUDAS
     deudas: DeudaPostpago[]
     agregarDeuda: (deuda: DeudaPostpago) => Promise<void>
+    /** Suma dinero al saldo a favor del cliente (abono o vuelto guardado) */
+    abonarSaldoFavor: (clienteId: string, montoUsd: number) => Promise<number>
+    /** Abono parcial a una deuda. Devuelve lo realmente aplicado. */
+    abonarDeuda: (deudaId: string, montoUsd: number, metodoPago?: string, notas?: string) => Promise<number>
+    /** Descuenta del saldo a favor. Devuelve lo realmente consumido. */
+    consumirSaldoFavor: (clienteId: string, montoUsd: number) => Promise<number>
     marcarDeudaPagada: (deudaId: string, metodoPago?: string, notas?: string) => Promise<void>
     getDeudasCliente: (clienteId: string) => DeudaPostpago[]
     getDeudasVencidas: () => DeudaPostpago[]
@@ -290,26 +298,143 @@ export const useAppStore = create<AppState>()(
                 insertRow('prepagos', prepago)
             },
 
+            // ── Saldo a favor del cliente ─────────────────────────
+            // Dinero del cliente sin producto asignado. A diferencia del
+            // prepago (que son N recargas de un litraje), el saldo es un
+            // monto en USD aplicable a cualquier compra o a su deuda.
+            abonarSaldoFavor: async (clienteId, montoUsd) => {
+                const monto = Math.max(0, Number(montoUsd) || 0)
+                if (monto <= 0) return 0
+                const s = get()
+                const cliente = s.clientes.find(c => c.id === clienteId)
+                if (!cliente) return 0
+                const nuevoSaldo = (parseFloat(cliente.saldo_usd) || 0) + monto
+                set((st) => ({
+                    clientes: st.clientes.map(c =>
+                        c.id === clienteId ? { ...c, saldo_usd: nuevoSaldo } : c)
+                }))
+                updateRow('clientes', clienteId, { saldo_usd: nuevoSaldo })
+                return nuevoSaldo
+            },
+            consumirSaldoFavor: async (clienteId, montoUsd) => {
+                const solicitado = Math.max(0, Number(montoUsd) || 0)
+                if (solicitado <= 0) return 0
+                const s = get()
+                const cliente = s.clientes.find(c => c.id === clienteId)
+                if (!cliente) return 0
+                const disponible = parseFloat(cliente.saldo_usd) || 0
+                // Nunca consumir mas de lo que hay: evita saldos negativos
+                const consumido = Math.min(disponible, solicitado)
+                if (consumido <= 0) return 0
+                const nuevoSaldo = Math.max(0, disponible - consumido)
+                set((st) => ({
+                    clientes: st.clientes.map(c =>
+                        c.id === clienteId ? { ...c, saldo_usd: nuevoSaldo } : c)
+                }))
+                updateRow('clientes', clienteId, { saldo_usd: nuevoSaldo })
+                return consumido
+            },
+
             deudas: [],
             agregarDeuda: async (deuda) => {
                 set((s) => ({ deudas: [deuda, ...s.deudas] }))
                 insertRow('deudas_postpago', deuda)
             },
+            // ── Abono parcial a deuda ─────────────────────────────
+            // Permite amortizar una deuda por partes. Si el abono cubre
+            // el pendiente, la deuda pasa a 'pagada'; si no, sigue
+            // pendiente con el acumulado actualizado.
+            abonarDeuda: async (deudaId, montoUsd, metodoPago = 'EFECTIVO USD', notas = '') => {
+                const s = get()
+                const deuda = s.deudas.find(d => d.id === deudaId)
+                if (!deuda || deuda.estado === 'pagada') return 0
+
+                const total = Math.max(0, Number(deuda.montoUsd) || 0)
+                // Deudas antiguas no tienen el campo: se asume 0 abonado
+                const yaPagado = Math.max(0, Number(deuda.montoPagadoUsd) || 0)
+                const pendiente = Math.max(0, total - yaPagado)
+                if (pendiente <= 0) return 0
+
+                const solicitado = Math.max(0, Number(montoUsd) || 0)
+                // Nunca abonar mas de lo que se debe
+                const abonado = Math.min(solicitado, pendiente)
+                if (abonado <= 0) return 0
+
+                const nuevoPagado = yaPagado + abonado
+                const quedaSaldada = nuevoPagado >= total - 0.001
+                const nuevaFecha = new Date().toISOString()
+
+                const updated = {
+                    ...deuda,
+                    montoPagadoUsd: nuevoPagado,
+                    estado: quedaSaldada ? ('pagada' as const) : deuda.estado,
+                    ...(quedaSaldada ? { fechaPago: nuevaFecha } : {}),
+                    notas: [deuda.notas, notas].filter(Boolean).join(' · '),
+                }
+                set((st) => ({ deudas: st.deudas.map(d => d.id === deudaId ? updated : d) }))
+
+                // Descontar del total adeudado del cliente SOLO lo abonado
+                const cliente = s.clientes.find(c => c.id === deuda.clienteId)
+                if (cliente) {
+                    const nuevaDeudaTotal = Math.max(0, (Number(cliente.deudaTotalUsd) || 0) - abonado)
+                    set((st) => ({
+                        clientes: st.clientes.map(c =>
+                            c.id === cliente.id ? { ...c, deudaTotalUsd: nuevaDeudaTotal } : c)
+                    }))
+                    updateRow('clientes', cliente.id, { deudaTotalUsd: nuevaDeudaTotal })
+                }
+
+                // Registrar el abono como venta: es dinero que entra a caja
+                const abonoVenta = {
+                    id: crypto.randomUUID(),
+                    fecha: nuevaFecha.split('T')[0],
+                    hora: new Date(nuevaFecha).toLocaleTimeString(),
+                    cliente_id: deuda.clienteId,
+                    cliente_nombre: deuda.clienteNombre,
+                    items_json: JSON.stringify([{ tipo: 'ABONO_POSTPAGO', ref_deuda: deudaId, monto: abonado }]),
+                    total_usd: abonado,
+                    tasa_bcv: s.tasaBcv.valor,
+                    metodo_pago: metodoPago,
+                    es_delivery: false,
+                    costo_delivery_usd: 0,
+                    notas: `ABONO POST-PAGO (Factura: ${deuda.ventaId}) $${abonado.toFixed(2)} de $${total.toFixed(2)}${quedaSaldada ? ' — SALDADA' : ` — restan $${(total - nuevoPagado).toFixed(2)}`} ${notas}`,
+                }
+                set((st) => ({ ventas: [abonoVenta, ...st.ventas] }))
+
+                updateRow('deudas_postpago', deudaId, {
+                    montoPagadoUsd: nuevoPagado,
+                    estado: updated.estado,
+                    ...(quedaSaldada ? { fecha_pago: nuevaFecha } : {}),
+                })
+                insertRow('ventas', abonoVenta)
+
+                return abonado
+            },
+
             marcarDeudaPagada: async (deudaId, metodoPago = 'EFECTIVO USD', notas = '') => {
                 const s = get()
                 const deuda = s.deudas.find(d => d.id === deudaId)
                 if (!deuda) return
 
                 const nuevaFecha = new Date().toISOString()
-                const updatedDeuda = { ...deuda, estado: 'pagada' as const, fechaPago: nuevaFecha, notas }
-                
+                // Si ya hubo abonos parciales, solo queda por cobrar el resto
+                const yaPagado = Math.max(0, Number(deuda.montoPagadoUsd) || 0)
+                const pendiente = Math.max(0, (Number(deuda.montoUsd) || 0) - yaPagado)
+                const updatedDeuda = {
+                    ...deuda,
+                    estado: 'pagada' as const,
+                    montoPagadoUsd: Number(deuda.montoUsd) || 0,
+                    fechaPago: nuevaFecha,
+                    notas,
+                }
+
                 // Actualizar estado local de la deuda
                 set((s) => ({ deudas: s.deudas.map(d => d.id === deudaId ? updatedDeuda : d) }))
 
                 // Actualizar estado local del cliente restándole a su deuda
                 const cliente = s.clientes.find(c => c.id === deuda.clienteId)
                 if (cliente) {
-                    const nuevaDeudaTotal = Math.max(0, (cliente.deudaTotalUsd || 0) - deuda.montoUsd)
+                    const nuevaDeudaTotal = Math.max(0, (cliente.deudaTotalUsd || 0) - pendiente)
                     set((s) => ({ clientes: s.clientes.map(c => c.id === cliente.id ? { ...c, deudaTotalUsd: nuevaDeudaTotal } : c) }))
                     updateRow('clientes', cliente.id, { deudaTotalUsd: nuevaDeudaTotal })
                 }
@@ -321,8 +446,8 @@ export const useAppStore = create<AppState>()(
                     hora: new Date(nuevaFecha).toLocaleTimeString(),
                     cliente_id: deuda.clienteId,
                     cliente_nombre: deuda.clienteNombre,
-                    items_json: JSON.stringify([{ tipo: 'COBRO_POSTPAGO', ref_deuda: deudaId, monto: deuda.montoUsd }]),
-                    total_usd: deuda.montoUsd,
+                    items_json: JSON.stringify([{ tipo: 'COBRO_POSTPAGO', ref_deuda: deudaId, monto: pendiente }]),
+                    total_usd: pendiente,
                     tasa_bcv: s.tasaBcv.valor,
                     metodo_pago: metodoPago,
                     es_delivery: false,
@@ -332,7 +457,7 @@ export const useAppStore = create<AppState>()(
                 set((s) => ({ ventas: [cobroVenta, ...s.ventas] }))
                 
                 // Disparar las promesas en bg
-                updateRow('deudas_postpago', deudaId, { estado: 'pagada', fecha_pago: nuevaFecha, notas })
+                updateRow('deudas_postpago', deudaId, { estado: 'pagada', montoPagadoUsd: Number(deuda.montoUsd) || 0, fecha_pago: nuevaFecha, notas })
                 insertRow('ventas', cobroVenta)
             },
             getDeudasCliente: (clienteId) => get().deudas.filter(d => d.clienteId === clienteId),

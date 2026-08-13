@@ -63,6 +63,12 @@ export default function Dashboard() {
         return ventas.filter(v => v.fecha && v.fecha.startsWith(hoy)).reduce((acc, v) => acc + (parseFloat(v.total_usd) || 0), 0)
     }, [ventas])
 
+    // Agua CRUDA pendiente de filtrar en los tanques de 1.000 L
+    const litrosCrudosTotal = useMemo(
+        () => (litrosTanques || []).reduce((s: number, t: any) => s + (t.litros || 0), 0),
+        [litrosTanques]
+    )
+
     const litrosVendidosHoyComputed = useMemo(() => {
         const hoy = getLocalDateString()
         return ventas.filter(v => v.fecha && v.fecha.startsWith(hoy)).reduce((acc, v) => {
@@ -255,6 +261,21 @@ export default function Dashboard() {
                         <span className="inline-block bg-[#dcfce7] dark:bg-[#166534]/20 text-[#166534] dark:text-[#4ade80] text-xs px-2 py-1 rounded font-bold font-grotesk">
                             +{litrosVendidosHoyComputed} L hoy
                         </span>
+                    </div>
+                    {/* Existencia del dia: filtrada (vendible) vs cruda (por filtrar) */}
+                    <div className="mt-3 pt-3 border-t border-gray-100 dark:border-[#2d3148] space-y-1">
+                        <div className="flex items-center justify-between">
+                            <span className="font-inter text-[11px] text-gray-500 dark:text-gray-400">Filtrada disponible</span>
+                            <span className="font-grotesk font-bold text-[13px] text-primary dark:text-[#5bb3e8]">
+                                {Math.round(litrosJumbo).toLocaleString('es-VE')} L
+                            </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="font-inter text-[11px] text-gray-500 dark:text-gray-400">Cruda por filtrar</span>
+                            <span className="font-grotesk font-bold text-[13px] text-tertiary dark:text-amber-500">
+                                {Math.round(litrosCrudosTotal).toLocaleString('es-VE')} L
+                            </span>
+                        </div>
                     </div>
                 </div>
 

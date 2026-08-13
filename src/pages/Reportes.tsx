@@ -63,6 +63,9 @@ const METODO_LABELS: Record<string, string> = {
   pago_movil: 'Pago Móvil',
   punto_venta: 'Punto de Venta',
   efectivo_ves: 'Efectivo VES',
+  post_pago: 'Crédito / Post-Pago',
+  cortesia: 'Cortesía / Donación',
+  'SALDO A FAVOR': 'Saldo a Favor',
   prepago_cliente: 'Prepago Cliente',
   pago_mixto: 'Pago Mixto',
 }
@@ -85,6 +88,23 @@ interface CierreData {
   ingresos_banco_usd?: number
   litros_vendidos: number
   litros_restantes: number
+  litros_crudos: number
+  caja_efectivo_usd: number
+  caja_efectivo_ves: number
+  caja_banco_ves: number
+  sin_cobro_credito_usd: number
+  sin_cobro_saldo_usd: number
+  sin_cobro_prepago_usd: number
+  sin_cobro_cortesia_usd: number
+  tasa_apertura: number
+  tasa_cierre: number
+  saldo_favor_total_usd: number
+  saldo_favor_clientes: number
+  tapas_iniciales: number
+  precintos_iniciales: number
+  etiquetas_iniciales: number
+  etiquetas_usadas: number
+  etiquetas_restantes: number
   utilidad_estimada_usd: number
   utilidad_neta_usd?: number
   total_ventas: number
@@ -152,7 +172,7 @@ function normalizarFecha(fecha: string): string {
    ════════════════════════════════════════════════════════════════════ */
 export default function Reportes() {
   const store = useAppStore()
-  const { ventas, litrosJumbo, tapas, precintos, tasaBcv, usdToVes, formatUsd } = store
+  const { ventas, litrosJumbo, litrosTanques, tapas, precintos, tasaBcv, usdToVes, formatUsd } = store
   const config = useConfig()
   const { usuarios } = useAuthStore()
 
@@ -168,6 +188,11 @@ export default function Reportes() {
 
   // ── Cierres ────────────────────────────────────────────────────
   const [cierres, setCierres] = useState<CierreData[]>([])
+  /** 'resumen' imprime solo el flujo de caja; 'detallado' toda la operacion */
+  const [modoImpresion, setModoImpresion] = useState<'resumen' | 'detallado'>('resumen')
+  /** Conteo fisico de caja al cerrar, para comparar contra el sistema */
+  const [contadoUsd, setContadoUsd] = useState('')
+  const [contadoVes, setContadoVes] = useState('')
   const [isLoadingCierres, setIsLoadingCierres] = useState(true)
   const [showCierreModal, setShowCierreModal] = useState(false)
   const [cierreActual, setCierreActual] = useState<CierreData | null>(null)
@@ -224,6 +249,23 @@ export default function Reportes() {
           ingresos_banco_usd: parseFloat(d.ingresos_banco_usd) || 0,
           litros_vendidos: parseFloat(d.litros_vendidos) || 0,
           litros_restantes: parseFloat(d.litros_restantes) || 0,
+          litros_crudos: parseFloat(d.litros_crudos) || 0,
+          caja_efectivo_usd: parseFloat(d.caja_efectivo_usd) || 0,
+          caja_efectivo_ves: parseFloat(d.caja_efectivo_ves) || 0,
+          caja_banco_ves: parseFloat(d.caja_banco_ves) || 0,
+          sin_cobro_credito_usd: parseFloat(d.sin_cobro_credito_usd) || 0,
+          sin_cobro_saldo_usd: parseFloat(d.sin_cobro_saldo_usd) || 0,
+          sin_cobro_prepago_usd: parseFloat(d.sin_cobro_prepago_usd) || 0,
+          sin_cobro_cortesia_usd: parseFloat(d.sin_cobro_cortesia_usd) || 0,
+          tasa_apertura: parseFloat(d.tasa_apertura) || 0,
+          tasa_cierre: parseFloat(d.tasa_cierre) || 0,
+          saldo_favor_total_usd: parseFloat(d.saldo_favor_total_usd) || 0,
+          saldo_favor_clientes: parseInt(d.saldo_favor_clientes) || 0,
+          tapas_iniciales: parseFloat(d.tapas_iniciales) || 0,
+          precintos_iniciales: parseFloat(d.precintos_iniciales) || 0,
+          etiquetas_iniciales: parseFloat(d.etiquetas_iniciales) || 0,
+          etiquetas_usadas: parseFloat(d.etiquetas_usadas) || 0,
+          etiquetas_restantes: parseFloat(d.etiquetas_restantes) || 0,
           utilidad_estimada_usd: parseFloat(d.utilidad_estimada_usd) || 0,
           utilidad_neta_usd: parseFloat(d.utilidad_neta_usd) || 0,
           total_ventas: parseInt(d.total_ventas) || 0,
@@ -286,8 +328,12 @@ export default function Reportes() {
       } catch { /* skip */ }
     })
     const utilidadEstimada = ingresosUsd - (litrosVendidos * COSTO_AGUA_POR_LITRO)
-    return { ingresosUsd, litrosVendidos, litrosRestantes: litrosJumbo, utilidadEstimada }
-  }, [ventasFiltradas, litrosJumbo])
+    // Agua cruda pendiente de filtrar en los tanques de 1.000 L
+    const litrosCrudos = (litrosTanques || []).reduce(
+      (s: number, t: any) => s + (t.litros || 0), 0
+    )
+    return { ingresosUsd, litrosVendidos, litrosRestantes: litrosJumbo, litrosCrudos, utilidadEstimada }
+  }, [ventasFiltradas, litrosJumbo, litrosTanques])
 
   // ── Desglose por Producto ──────────────────────────────────────
   const desgloseProductos = useMemo(() => {
@@ -447,13 +493,46 @@ export default function Reportes() {
     // ── Desglose por método de pago (incluye banco) ─────────────
     let pagoMovilUsd = 0
     let puntoVentaUsd = 0
+    // Flujo de caja separado por moneda y naturaleza del cobro
+    let cajaEfectivoUsd = 0
+    let cajaEfectivoVes = 0
+    let cajaBancoVes = 0
+    let sinCobroCredito = 0
+    let sinCobroSaldo = 0
+    let sinCobroPrepago = 0
+    let sinCobroCortesia = 0
     ventasFiltradas.forEach((v: any) => {
       const monto = parseFloat(v.total_usd) || 0
       const metodo = v.metodo_pago || ''
+      const ves = parseFloat(v.total_ves) || 0
+      const saldoAp = parseFloat(v.saldo_aplicado_usd) || 0
       if (metodo === 'pago_movil') pagoMovilUsd += monto
       if (metodo === 'punto_venta') puntoVentaUsd += monto
+      if (metodo === 'efectivo_usd') cajaEfectivoUsd += monto - saldoAp
+      else if (metodo === 'efectivo_ves') cajaEfectivoVes += ves
+      else if (metodo === 'pago_movil' || metodo === 'punto_venta') cajaBancoVes += ves
+      else if (metodo === 'post_pago') sinCobroCredito += monto
+      else if (metodo === 'prepago_cliente') sinCobroPrepago += monto
+      else if (metodo === 'cortesia') sinCobroCortesia += parseFloat(v.valor_cortesia_usd) || 0
+      if (saldoAp > 0) sinCobroSaldo += saldoAp
     })
     const ingresosbancoUsd = pagoMovilUsd + puntoVentaUsd
+
+    // Tasa de apertura: la del primer movimiento del periodo
+    const tasaApertura = (() => {
+      const primera = [...ventasFiltradas].sort((a: any, b: any) =>
+        String(a.hora || '').localeCompare(String(b.hora || '')))[0]
+      return parseFloat(primera?.tasa_bcv) || tasaBcv.valor
+    })()
+
+    // Insumos: inicial heredado del ultimo cierre previo
+    const cierreAnterior: any = [...cierres]
+      .filter((c: any) => c.fecha && c.fecha < getLocalDateString())
+      .sort((a: any, b: any) => String(b.fecha).localeCompare(String(a.fecha)))[0]
+
+    // Saldos a favor pendientes: obligacion de la empresa
+    const conSaldo = (store.clientes || []).filter((c: any) => (parseFloat(c.saldo_usd) || 0) > 0)
+    const saldoFavorTotal = conSaldo.reduce((s: number, c: any) => s + (parseFloat(c.saldo_usd) || 0), 0)
 
     // ── Egresos proveedores según frecuencia del cierre ─────────
     const provFiltrados = config.proveedores.filter(p => {
@@ -504,6 +583,23 @@ export default function Reportes() {
       ingresos_banco_usd: parseFloat(ingresosbancoUsd.toFixed(2)),
       litros_vendidos: metricas.litrosVendidos,
       litros_restantes: metricas.litrosRestantes,
+      litros_crudos: metricas.litrosCrudos,
+      caja_efectivo_usd: parseFloat(cajaEfectivoUsd.toFixed(2)),
+      caja_efectivo_ves: parseFloat(cajaEfectivoVes.toFixed(2)),
+      caja_banco_ves: parseFloat(cajaBancoVes.toFixed(2)),
+      sin_cobro_credito_usd: parseFloat(sinCobroCredito.toFixed(2)),
+      sin_cobro_saldo_usd: parseFloat(sinCobroSaldo.toFixed(2)),
+      sin_cobro_prepago_usd: parseFloat(sinCobroPrepago.toFixed(2)),
+      sin_cobro_cortesia_usd: parseFloat(sinCobroCortesia.toFixed(2)),
+      tasa_apertura: tasaApertura,
+      tasa_cierre: tasaBcv.valor,
+      saldo_favor_total_usd: parseFloat(saldoFavorTotal.toFixed(2)),
+      saldo_favor_clientes: conSaldo.length,
+      tapas_iniciales: cierreAnterior ? (Number(cierreAnterior.tapas_restantes) || 0) : tapas,
+      precintos_iniciales: cierreAnterior ? (Number(cierreAnterior.precintos_restantes) || 0) : precintos,
+      etiquetas_iniciales: cierreAnterior ? (Number(cierreAnterior.etiquetas_restantes) || 0) : (store.etiquetas ?? 0),
+      etiquetas_usadas: 0,
+      etiquetas_restantes: store.etiquetas ?? 0,
       utilidad_estimada_usd: parseFloat(utilidadEstimada.toFixed(2)),
       utilidad_neta_usd: parseFloat(utilidadNeta.toFixed(2)),
       total_ventas: ventasFiltradas.length,
@@ -561,8 +657,10 @@ export default function Reportes() {
     setShowCierreModal(true)
   }
 
-  const imprimirCierre = () => {
-    window.print()
+  const imprimirCierre = (modo: 'resumen' | 'detallado') => {
+    setModoImpresion(modo)
+    // Esperar a que React aplique el modo antes de abrir el dialogo
+    setTimeout(() => window.print(), 60)
   }
 
 
@@ -733,8 +831,11 @@ export default function Reportes() {
           <div className="font-grotesk text-[28px] font-bold text-[#191c1e] dark:text-[#e4e6f0] leading-tight">
             {Math.round(metricas.litrosRestantes).toLocaleString('es-VE')} L
           </div>
-          <div className="font-grotesk text-sm text-gray-400 dark:text-gray-500 mt-0.5">
-            {Math.round((metricas.litrosRestantes / 2500) * 100)}% del Reservorio
+          <div className="font-grotesk text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            Filtrada · {Math.round((metricas.litrosRestantes / 2500) * 100)}% del Reservorio
+          </div>
+          <div className="font-grotesk text-xs text-tertiary dark:text-amber-500 mt-1 pt-1 border-t border-gray-100 dark:border-[#2d3148]">
+            + {Math.round(metricas.litrosCrudos).toLocaleString('es-VE')} L cruda por filtrar
           </div>
         </div>
 
@@ -1068,6 +1169,11 @@ export default function Reportes() {
             <div className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5 font-manrope">Tipo de Nota</label>
+                <p className="text-[11px] font-inter text-amber-700 dark:text-amber-500 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-lg px-3 py-2 mb-3">
+                  Solo registra un ajuste contable. <strong>No descuenta inventario</strong>.
+                  Si entregaste producto, regístralo en el Punto de Venta con el
+                  método <strong>Cortesía / Donación</strong>.
+                </p>
                 <select value={notaTipo} onChange={e => setNotaTipo(e.target.value as NotaCredito['tipo'])}
                   className="w-full border-2 border-gray-200 dark:border-[#2d3148] rounded-xl p-2.5 text-sm font-inter
                     text-[#191c1e] dark:text-[#e4e6f0] bg-white dark:bg-[#1a1d27] outline-none focus:border-primary transition-colors">
@@ -1349,9 +1455,9 @@ export default function Reportes() {
                   </h2>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={imprimirCierre}
+                      onClick={() => imprimirCierre('resumen')}
                       className="text-gray-400 hover:text-primary dark:hover:text-[#5bb3e8] transition-colors"
-                      title="Imprimir"
+                      title="Imprimir resumen"
                     >
                       <Printer size={20} />
                     </button>
@@ -1424,7 +1530,7 @@ export default function Reportes() {
                   </p>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="bg-cyan-50 dark:bg-cyan-900/10 rounded-lg p-3 text-center border border-cyan-100 dark:border-cyan-900/30">
-                      <div className="font-inter text-[10px] uppercase tracking-wider text-cyan-600 dark:text-cyan-400 font-bold mb-1">Agua Cruda (Stock Restante)</div>
+                      <div className="font-inter text-[10px] uppercase tracking-wider text-cyan-600 dark:text-cyan-400 font-bold mb-1">Agua Filtrada (Disponible)</div>
                       <div className="font-grotesk text-lg font-bold text-cyan-700 dark:text-cyan-400">
                         {cierreActual.litros_restantes.toLocaleString('es-VE')} L
                       </div>
@@ -1507,6 +1613,155 @@ export default function Reportes() {
                 {/* VISTA: ACUMULADO */}
                 <div className={tabCierre === 'acumulado' ? 'block print:block' : 'hidden print:block'}>
 
+                  {/* ═══ ARQUEO DE CAJA POR MONEDA ═══ */}
+                  {(() => {
+                    const c: any = cierreActual
+                    const efUsd = Number(c.caja_efectivo_usd) || 0
+                    const efVes = Number(c.caja_efectivo_ves) || 0
+                    const bcVes = Number(c.caja_banco_ves) || 0
+                    const credito = Number(c.sin_cobro_credito_usd) || 0
+                    const saldoAp = Number(c.sin_cobro_saldo_usd) || 0
+                    const prepago = Number(c.sin_cobro_prepago_usd) || 0
+                    const cortesia = Number(c.sin_cobro_cortesia_usd) || 0
+                    const sinCobro = credito + saldoAp + prepago + cortesia
+                    const tApert = Number(c.tasa_apertura) || 0
+                    const tCierre = Number(c.tasa_cierre) || 0
+                    const contUsd = parseFloat(contadoUsd) || 0
+                    const contVes = parseFloat(contadoVes) || 0
+                    const hayConteo = contadoUsd.trim() !== '' || contadoVes.trim() !== ''
+                    const totalVesRecibido = efVes + bcVes
+                    const fmtVes = (n: number) => n.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+                    return (
+                      <>
+                        <div className="mb-5 break-inside-avoid">
+                          <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                            ARQUEO DE CAJA — EFECTIVO CONTADO
+                          </p>
+                          <table className="w-full text-sm font-inter">
+                            <thead>
+                              <tr className="border-b border-gray-200 dark:border-[#2d3148]">
+                                <th className="text-left font-normal text-[11px] text-gray-400 py-1">Concepto</th>
+                                <th className="text-right font-normal text-[11px] text-gray-400 py-1">Sistema</th>
+                                {hayConteo && <th className="text-right font-normal text-[11px] text-gray-400 py-1">Contado</th>}
+                                {hayConteo && <th className="text-right font-normal text-[11px] text-gray-400 py-1 w-20">Dif.</th>}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr>
+                                <td className="py-1 text-gray-600 dark:text-gray-400">Efectivo USD</td>
+                                <td className="py-1 text-right font-grotesk font-bold">${efUsd.toFixed(2)}</td>
+                                {hayConteo && <td className="py-1 text-right font-grotesk">${contUsd.toFixed(2)}</td>}
+                                {hayConteo && <td className={`py-1 text-right font-grotesk font-bold ${Math.abs(contUsd - efUsd) < 0.01 ? 'text-gray-400' : 'text-red-600 dark:text-red-400'}`}>
+                                  {Math.abs(contUsd - efUsd) < 0.01 ? '—' : (contUsd - efUsd).toFixed(2)}
+                                </td>}
+                              </tr>
+                              <tr>
+                                <td className="py-1 text-gray-600 dark:text-gray-400">Efectivo Bs</td>
+                                <td className="py-1 text-right font-grotesk font-bold">{fmtVes(efVes)}</td>
+                                {hayConteo && <td className="py-1 text-right font-grotesk">{fmtVes(contVes)}</td>}
+                                {hayConteo && <td className={`py-1 text-right font-grotesk font-bold ${Math.abs(contVes - efVes) < 0.01 ? 'text-gray-400' : 'text-red-600 dark:text-red-400'}`}>
+                                  {Math.abs(contVes - efVes) < 0.01 ? '—' : fmtVes(contVes - efVes)}
+                                </td>}
+                              </tr>
+                            </tbody>
+                          </table>
+                          <p className="font-inter text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                            Cada moneda se cuenta por separado · los Bs son el monto real recibido
+                          </p>
+                        </div>
+
+                        <div className="mb-5 break-inside-avoid">
+                          <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                            CONCILIACIÓN BANCARIA
+                          </p>
+                          <div className="flex justify-between items-center text-sm font-inter py-1">
+                            <span className="text-gray-600 dark:text-gray-400">Pago móvil + Punto de venta (Bs)</span>
+                            <span className="font-grotesk font-bold">{fmtVes(bcVes)}</span>
+                          </div>
+                          <p className="font-inter text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                            Verificar contra el estado de cuenta y el lote del punto
+                          </p>
+                        </div>
+
+                        <div className="mb-5 break-inside-avoid">
+                          <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                            DESPACHADO SIN COBRO HOY
+                          </p>
+                          <div className="flex justify-between items-center text-sm font-inter py-0.5">
+                            <span className="text-gray-600 dark:text-gray-400">Ventas a crédito</span>
+                            <span className="font-grotesk font-bold">${credito.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-sm font-inter py-0.5">
+                            <span className="text-gray-600 dark:text-gray-400">Pagado con saldo a favor</span>
+                            <span className="font-grotesk font-bold">${saldoAp.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-sm font-inter py-0.5">
+                            <span className="text-gray-600 dark:text-gray-400">Cubierto con prepago</span>
+                            <span className="font-grotesk font-bold">${prepago.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-sm font-inter py-0.5">
+                            <span className="text-gray-600 dark:text-gray-400">Cortesías y donaciones</span>
+                            <span className="font-grotesk font-bold">${cortesia.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-sm font-inter py-1 mt-1 border-t border-gray-200 dark:border-[#2d3148]">
+                            <span className="font-bold text-gray-700 dark:text-gray-300">Total sin cobro</span>
+                            <span className="font-grotesk font-bold">${sinCobro.toFixed(2)}</span>
+                          </div>
+                          <p className="font-inter text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                            Salió del inventario · el crédito genera cuenta por cobrar
+                          </p>
+                        </div>
+
+                        {tApert > 0 && tCierre > 0 && Math.abs(tApert - tCierre) > 0.01 && (
+                          <div className="mb-5 break-inside-avoid border border-gray-300 dark:border-[#2d3148] rounded-lg px-3 py-2">
+                            <p className="font-manrope font-bold text-xs text-gray-700 dark:text-gray-300 mb-1">
+                              Diferencia de cambio del día
+                            </p>
+                            <div className="grid grid-cols-2 gap-x-4 text-[11px] font-inter">
+                              <div className="flex justify-between"><span className="text-gray-500">Tasa apertura</span><span className="font-grotesk">{tApert.toFixed(2)}</span></div>
+                              <div className="flex justify-between"><span className="text-gray-500">Tasa cierre</span><span className="font-grotesk">{tCierre.toFixed(2)}</span></div>
+                              <div className="flex justify-between col-span-2 mt-1 pt-1 border-t border-gray-200 dark:border-[#2d3148]">
+                                <span className="text-gray-600 dark:text-gray-400 font-bold">Bs recibidos a tasa de venta</span>
+                                <span className="font-grotesk font-bold">{fmtVes(totalVesRecibido)}</span>
+                              </div>
+                            </div>
+                            <p className="font-inter text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                              Explica por qué el total en Bs no coincide al recalcular con la tasa final
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    )
+                  })()}
+
+                  {/* ═══ RESUMEN DE LITRAJE DEL DÍA (imprimible) */}
+                  <div className="mb-5 break-inside-avoid">
+                    <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                      RESUMEN DE LITRAJE DEL DÍA
+                    </p>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-gray-50 dark:bg-[#1a1d27] rounded-lg px-3 py-2 text-center">
+                        <p className="font-inter text-[10px] text-gray-500 dark:text-gray-400 mb-0.5">Vendidos</p>
+                        <p className="font-grotesk font-bold text-base text-primary dark:text-[#5bb3e8]">
+                          {Math.round(metricas.litrosVendidos).toLocaleString('es-VE')} L
+                        </p>
+                      </div>
+                      <div className="bg-gray-50 dark:bg-[#1a1d27] rounded-lg px-3 py-2 text-center">
+                        <p className="font-inter text-[10px] text-gray-500 dark:text-gray-400 mb-0.5">Filtrada disponible</p>
+                        <p className="font-grotesk font-bold text-base text-[#191c1e] dark:text-[#e4e6f0]">
+                          {Math.round(metricas.litrosRestantes).toLocaleString('es-VE')} L
+                        </p>
+                      </div>
+                      <div className="bg-gray-50 dark:bg-[#1a1d27] rounded-lg px-3 py-2 text-center">
+                        <p className="font-inter text-[10px] text-gray-500 dark:text-gray-400 mb-0.5">Cruda por filtrar</p>
+                        <p className="font-grotesk font-bold text-base text-tertiary dark:text-amber-500">
+                          {Math.round(metricas.litrosCrudos).toLocaleString('es-VE')} L
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* ═══ INGRESOS POR MÉTODO DE PAGO (sección principal) */}
                   <div className="mb-5">
                     <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-3">
@@ -1556,6 +1811,161 @@ export default function Reportes() {
                       </div>
                     )}
                   </div>
+
+                  {/* ═══ SECCIONES EXCLUSIVAS DEL CIERRE DETALLADO ═══ */}
+                  {modoImpresion === 'detallado' && (() => {
+                    const c: any = cierreActual
+                    let ventasDelCierre: any[] = []
+                    try { ventasDelCierre = JSON.parse(c.raw_ventas_json || '[]') } catch { ventasDelCierre = [] }
+
+                    const deudasPend = (store.deudas || [])
+                      .filter((d: any) => d.estado === 'pendiente')
+                      .sort((a: any, b: any) => String(a.fechaVencimiento).localeCompare(String(b.fechaVencimiento)))
+                    const hoyIso = new Date().toISOString()
+                    const totalPend = deudasPend.reduce((s: number, d: any) =>
+                      s + Math.max(0, (Number(d.montoUsd) || 0) - (Number(d.montoPagadoUsd) || 0)), 0)
+                    const totalVencido = deudasPend
+                      .filter((d: any) => String(d.fechaVencimiento) < hoyIso)
+                      .reduce((s: number, d: any) => s + Math.max(0, (Number(d.montoUsd) || 0) - (Number(d.montoPagadoUsd) || 0)), 0)
+
+                    const insumos = [
+                      { n: 'Tapas', ini: Number(c.tapas_iniciales) || 0, uso: Number(c.tapas_usadas) || 0, fin: Number(c.tapas_restantes) || 0 },
+                      { n: 'Precintos', ini: Number(c.precintos_iniciales) || 0, uso: Number(c.precintos_usados) || 0, fin: Number(c.precintos_restantes) || 0 },
+                      { n: 'Etiquetas', ini: Number(c.etiquetas_iniciales) || 0, uso: Number(c.etiquetas_usadas) || 0, fin: Number(c.etiquetas_restantes) || 0 },
+                    ]
+
+                    return (
+                      <>
+                        <div className="mb-5 break-inside-avoid">
+                          <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                            TRANSACCIONES DEL DÍA ({ventasDelCierre.length})
+                          </p>
+                          <table className="w-full text-[11px] font-inter">
+                            <thead>
+                              <tr className="border-b border-gray-200 dark:border-[#2d3148]">
+                                <th className="text-left font-normal text-[10px] text-gray-400 py-1">Hora</th>
+                                <th className="text-left font-normal text-[10px] text-gray-400 py-1">Cliente</th>
+                                <th className="text-left font-normal text-[10px] text-gray-400 py-1">Método</th>
+                                <th className="text-right font-normal text-[10px] text-gray-400 py-1 w-16">Monto</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {ventasDelCierre.map((v: any, i: number) => (
+                                <tr key={i}>
+                                  <td className="py-0.5 text-gray-600 dark:text-gray-400">{String(v.hora || '').slice(0, 5)}</td>
+                                  <td className="py-0.5 text-gray-700 dark:text-gray-300">{v.cliente_nombre || 'Contado'}</td>
+                                  <td className="py-0.5 text-gray-500 dark:text-gray-500">{METODO_LABELS[v.metodo_pago] || v.metodo_pago || '—'}</td>
+                                  <td className="py-0.5 text-right font-grotesk">${(parseFloat(v.total_usd) || 0).toFixed(2)}</td>
+                                </tr>
+                              ))}
+                              <tr className="border-t border-gray-300 dark:border-[#2d3148]">
+                                <td colSpan={3} className="py-1 font-bold text-gray-700 dark:text-gray-300">Total</td>
+                                <td className="py-1 text-right font-grotesk font-bold">
+                                  ${ventasDelCierre.reduce((s: number, v: any) => s + (parseFloat(v.total_usd) || 0), 0).toFixed(2)}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="mb-5 break-inside-avoid">
+                          <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                            MOVIMIENTO DE INSUMOS
+                          </p>
+                          <table className="w-full text-[11px] font-inter">
+                            <thead>
+                              <tr className="border-b border-gray-200 dark:border-[#2d3148]">
+                                <th className="text-left font-normal text-[10px] text-gray-400 py-1">Insumo</th>
+                                <th className="text-right font-normal text-[10px] text-gray-400 py-1">Inicial</th>
+                                <th className="text-right font-normal text-[10px] text-gray-400 py-1">Usado</th>
+                                <th className="text-right font-normal text-[10px] text-gray-400 py-1">Repuesto</th>
+                                <th className="text-right font-normal text-[10px] text-gray-400 py-1">Final</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {insumos.map(x => {
+                                const repuesto = Math.max(0, x.fin - (x.ini - x.uso))
+                                return (
+                                  <tr key={x.n}>
+                                    <td className="py-0.5 text-gray-700 dark:text-gray-300">{x.n}</td>
+                                    <td className="py-0.5 text-right font-grotesk text-gray-500">{x.ini}</td>
+                                    <td className="py-0.5 text-right font-grotesk">{x.uso}</td>
+                                    <td className="py-0.5 text-right font-grotesk text-gray-500">{repuesto}</td>
+                                    <td className={`py-0.5 text-right font-grotesk ${x.fin <= 200 ? 'font-bold' : ''}`}>{x.fin}</td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                          {insumos.some(x => x.fin <= 200) && (
+                            <div className="mt-2 border border-gray-400 dark:border-[#2d3148] px-2 py-1.5">
+                              <p className="font-manrope font-bold text-[11px] text-gray-800 dark:text-gray-200">
+                                Alerta de stock — {insumos.filter(x => x.fin <= 200).map(x => `${x.n}: ${x.fin}`).join(' · ')}
+                              </p>
+                              <p className="font-inter text-[10px] text-gray-500 mt-0.5">Reponer antes de la próxima jornada</p>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="mb-5 break-inside-avoid">
+                          <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                            CUENTAS POR COBRAR ({deudasPend.length})
+                          </p>
+                          <table className="w-full text-[11px] font-inter">
+                            <thead>
+                              <tr className="border-b border-gray-200 dark:border-[#2d3148]">
+                                <th className="text-left font-normal text-[10px] text-gray-400 py-1">Cliente</th>
+                                <th className="text-left font-normal text-[10px] text-gray-400 py-1">Vence</th>
+                                <th className="text-right font-normal text-[10px] text-gray-400 py-1">Abonado</th>
+                                <th className="text-right font-normal text-[10px] text-gray-400 py-1 w-16">Pendiente</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {deudasPend.slice(0, 20).map((d: any) => {
+                                const pag = Number(d.montoPagadoUsd) || 0
+                                const pen = Math.max(0, (Number(d.montoUsd) || 0) - pag)
+                                const vencida = String(d.fechaVencimiento) < hoyIso
+                                return (
+                                  <tr key={d.id}>
+                                    <td className="py-0.5 text-gray-700 dark:text-gray-300">{d.clienteNombre}</td>
+                                    <td className={`py-0.5 ${vencida ? 'font-bold text-gray-800 dark:text-gray-200' : 'text-gray-500'}`}>
+                                      {new Date(d.fechaVencimiento).toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit' })}
+                                      {vencida ? ' · vencida' : ''}
+                                    </td>
+                                    <td className="py-0.5 text-right font-grotesk text-gray-500">${pag.toFixed(2)}</td>
+                                    <td className="py-0.5 text-right font-grotesk">${pen.toFixed(2)}</td>
+                                  </tr>
+                                )
+                              })}
+                              <tr className="border-t border-gray-300 dark:border-[#2d3148]">
+                                <td colSpan={3} className="py-1 font-bold text-gray-700 dark:text-gray-300">Saldo pendiente acumulado</td>
+                                <td className="py-1 text-right font-grotesk font-bold">${totalPend.toFixed(2)}</td>
+                              </tr>
+                              <tr>
+                                <td colSpan={3} className="py-0.5 text-gray-500 text-[10px]">De los cuales vencidos</td>
+                                <td className="py-0.5 text-right font-grotesk text-[10px]">${totalVencido.toFixed(2)}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="mb-5 break-inside-avoid">
+                          <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+                            SALDOS A FAVOR DE CLIENTES
+                          </p>
+                          <div className="flex justify-between items-center text-sm font-inter py-1 border-t border-gray-200 dark:border-[#2d3148]">
+                            <span className="font-bold text-gray-700 dark:text-gray-300">
+                              Saldo pendiente ({Number(c.saldo_favor_clientes) || 0} cliente{(Number(c.saldo_favor_clientes) || 0) !== 1 ? 's' : ''})
+                            </span>
+                            <span className="font-grotesk font-bold">${(Number(c.saldo_favor_total_usd) || 0).toFixed(2)}</span>
+                          </div>
+                          <p className="font-inter text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                            Obligación de la empresa: producto ya pagado y no despachado
+                          </p>
+                        </div>
+                      </>
+                    )
+                  })()}
 
                   {/* ═══ DESGLOSE POR PRODUCTO */}
                   {productosDetalle.length > 0 && (
@@ -1819,16 +2229,81 @@ export default function Reportes() {
                   </span>
                 </div>
 
-                {/* Print button */}
-                <button
-                  onClick={imprimirCierre}
-                  className="w-full mt-5 py-3 rounded-xl font-manrope font-bold text-white shadow-md
-                    transition-all no-print flex items-center justify-center gap-2"
-                  style={{ background: 'linear-gradient(135deg, #005e97, #0077be)' }}
-                >
-                  <Printer size={18} />
-                  Imprimir Cierre
-                </button>
+                {/* ═══ PIE DE FIRMAS (solo impresión) ═══ */}
+                <div className="hidden print:block mt-10 break-inside-avoid">
+                  <div className="grid grid-cols-2 gap-8">
+                    <div className="border-t border-gray-800 pt-1.5 text-center">
+                      <p className="font-inter text-[11px] text-gray-700">Entregado por</p>
+                      <p className="font-inter text-[10px] text-gray-500 mt-0.5">
+                        {cierreActual.operario || 'Operador'}
+                      </p>
+                    </div>
+                    <div className="border-t border-gray-800 pt-1.5 text-center">
+                      <p className="font-inter text-[11px] text-gray-700">Recibido por</p>
+                      <p className="font-inter text-[10px] text-gray-500 mt-0.5">Administración</p>
+                    </div>
+                  </div>
+                  <p className="font-inter text-[9px] text-gray-400 text-center mt-5 pt-2 border-t border-gray-200">
+                    Documento de control interno · No constituye factura fiscal · Generado {new Date().toLocaleString('es-VE')}
+                  </p>
+                </div>
+
+                {/* Conteo físico de caja */}
+                <div className="mt-5 no-print bg-gray-50 dark:bg-[#1a1d27] rounded-xl p-4 border border-gray-100 dark:border-[#2d3148]">
+                  <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-3">
+                    CONTEO FÍSICO DE CAJA
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-inter text-[11px] text-gray-500 dark:text-gray-400 mb-1">
+                        Dólares contados
+                      </label>
+                      <input
+                        type="number" min="0" step="0.01" placeholder="0.00"
+                        value={contadoUsd}
+                        onChange={e => setContadoUsd(e.target.value)}
+                        className="w-full border border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1e2235] rounded-lg px-3 py-2 font-grotesk font-bold text-sm
+                          outline-none focus:border-primary dark:focus:border-[#5bb3e8] text-gray-800 dark:text-[#e4e6f0]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-inter text-[11px] text-gray-500 dark:text-gray-400 mb-1">
+                        Bolívares contados
+                      </label>
+                      <input
+                        type="number" min="0" step="0.01" placeholder="0,00"
+                        value={contadoVes}
+                        onChange={e => setContadoVes(e.target.value)}
+                        className="w-full border border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1e2235] rounded-lg px-3 py-2 font-grotesk font-bold text-sm
+                          outline-none focus:border-primary dark:focus:border-[#5bb3e8] text-gray-800 dark:text-[#e4e6f0]"
+                      />
+                    </div>
+                  </div>
+                  <p className="font-inter text-[10px] text-gray-400 dark:text-gray-500 mt-2">
+                    Opcional · si se completa, el cierre impreso muestra la diferencia
+                  </p>
+                </div>
+
+                {/* Botones de impresión */}
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                  <button
+                    onClick={() => imprimirCierre('resumen')}
+                    className="py-3 rounded-xl font-manrope font-bold text-white shadow-md
+                      transition-all no-print flex items-center justify-center gap-2 text-sm"
+                    style={{ background: 'linear-gradient(135deg, #005e97, #0077be)' }}
+                  >
+                    <Printer size={16} />
+                    Imprimir resumen
+                  </button>
+                  <button
+                    onClick={() => imprimirCierre('detallado')}
+                    className="py-3 rounded-xl font-manrope font-bold text-primary dark:text-[#5bb3e8] border-2 border-primary dark:border-[#2d3148]
+                      transition-all no-print flex items-center justify-center gap-2 text-sm hover:bg-blue-50 dark:hover:bg-[#2d3148]"
+                  >
+                    <Printer size={16} />
+                    Imprimir detallado
+                  </button>
+                </div>
               </div>
             </div>
           </div>

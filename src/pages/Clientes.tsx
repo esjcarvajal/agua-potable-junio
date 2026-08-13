@@ -53,6 +53,8 @@ export default function Clientes() {
   const [activeTab, setActiveTab] = useState<'datos'|'cobrar'>('datos')
   const [pagoDeudaId, setPagoDeudaId] = useState<string | null>(null)
   const [pagoMetodo, setPagoMetodo] = useState('EFECTIVO USD')
+  /** Monto a abonar. Vacio = pagar la deuda completa. */
+  const [pagoMonto, setPagoMonto] = useState('')
   
   // Toast
   const [toast, setToast] = useState<ToastState>({ mensaje: '', tipo: 'success', visible: false })
@@ -194,12 +196,70 @@ export default function Clientes() {
     setShowDetalleModal(true)
   }
 
+  /** Cuanto queda por pagar de una deuda (descontando abonos previos) */
+  const pendienteDeuda = (d: any) => {
+    if (!d) return 0
+    const total = Math.max(0, Number(d.montoUsd) || 0)
+    const pagado = Math.max(0, Number(d.montoPagadoUsd) || 0)
+    return Math.max(0, total - pagado)
+  }
+
   const procesarPagoDeuda = async () => {
     if (!pagoDeudaId) return
-    await store.marcarDeudaPagada(pagoDeudaId, pagoMetodo)
-    showToast('Pago registrado correctamente', 'success')
+    const deuda = store.deudas.find((d: any) => d.id === pagoDeudaId)
+    if (!deuda) return
+
+    const pendiente = pendienteDeuda(deuda)
+    if (pendiente <= 0) {
+      showToast('Esta deuda ya está saldada', 'error')
+      setPagoDeudaId(null)
+      return
+    }
+
+    // Monto vacio = pagar todo lo pendiente
+    const solicitado = pagoMonto.trim() === '' ? pendiente : (parseFloat(pagoMonto) || 0)
+    if (solicitado <= 0) {
+      showToast('Ingresa un monto mayor a cero', 'error')
+      return
+    }
+    if (solicitado > pendiente + 0.001) {
+      showToast(`El monto excede lo pendiente ($${pendiente.toFixed(2)})`, 'error')
+      return
+    }
+
+    // Pago con saldo a favor: verificar disponibilidad
+    if (pagoMetodo === 'SALDO A FAVOR') {
+      const cliente = store.clientes.find((c: any) => c.id === deuda.clienteId)
+      const disponible = Math.max(0, parseFloat(cliente?.saldo_usd) || 0)
+      if (disponible < solicitado) {
+        showToast(
+          `Saldo insuficiente: $${disponible.toFixed(2)} disponible(s) para abonar $${solicitado.toFixed(2)}`,
+          'error'
+        )
+        return
+      }
+    }
+
+    const aplicado = await store.abonarDeuda(pagoDeudaId, solicitado, pagoMetodo)
+    if (aplicado <= 0) {
+      showToast('No se pudo registrar el abono', 'error')
+      return
+    }
+
+    if (pagoMetodo === 'SALDO A FAVOR') {
+      await store.consumirSaldoFavor(deuda.clienteId, aplicado)
+    }
+
+    const restante = pendiente - aplicado
+    showToast(
+      restante <= 0.001
+        ? `Deuda saldada — $${aplicado.toFixed(2)} registrado`
+        : `Abono de $${aplicado.toFixed(2)} registrado · Restan $${restante.toFixed(2)}`,
+      'success'
+    )
     setPagoDeudaId(null)
     setPagoMetodo('EFECTIVO USD')
+    setPagoMonto('')
   }
 
   /* ═══════════════════════ RENDER ═══════════════════════ */
@@ -607,18 +667,53 @@ export default function Clientes() {
                   {pagoDeudaId && (
                     <div className="mb-4 bg-blue-50 dark:bg-blue-900/20 p-4 rounded-xl border border-blue-100 dark:border-blue-800">
                       <div className="flex justify-between items-center mb-2">
-                        <span className="font-manrope font-bold text-sm text-blue-900 dark:text-blue-300">Registrar Pago</span>
-                        <button onClick={() => setPagoDeudaId(null)} className="text-blue-500 hover:text-blue-700 dark:hover:text-blue-400"><X size={16} /></button>
+                        <span className="font-manrope font-bold text-sm text-blue-900 dark:text-blue-300">Registrar Pago o Abono</span>
+                        <button onClick={() => { setPagoDeudaId(null); setPagoMonto('') }} className="text-blue-500 hover:text-blue-700 dark:hover:text-blue-400"><X size={16} /></button>
                       </div>
+                          {(() => {
+                            const dSel = store.deudas.find((x: any) => x.id === pagoDeudaId)
+                            const pend = pendienteDeuda(dSel)
+                            return (
+                              <>
+                                <div className="flex justify-between items-center mb-2">
+                                  <span className="font-inter text-xs text-blue-800 dark:text-blue-400">Pendiente de esta factura</span>
+                                  <span className="font-grotesk font-bold text-sm text-blue-900 dark:text-blue-300">${pend.toFixed(2)}</span>
+                                </div>
+                                <label className="block font-inter text-xs text-blue-800 dark:text-blue-400 mb-1">
+                                  Monto a abonar (vacío = pagar todo)
+                                </label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder={pend.toFixed(2)}
+                                  value={pagoMonto}
+                                  onChange={e => setPagoMonto(e.target.value)}
+                                  className="w-full border-2 border-blue-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-lg p-2 text-sm outline-none focus:border-blue-500 text-gray-800 dark:text-[#e4e6f0] mb-1 font-grotesk font-bold"
+                                />
+                                {(parseFloat(pagoMonto) || 0) > 0 && (parseFloat(pagoMonto) || 0) < pend && (
+                                  <p className="font-inter text-[11px] text-amber-700 dark:text-amber-500 mb-2">
+                                    Abono parcial · restarán ${(pend - (parseFloat(pagoMonto) || 0)).toFixed(2)}
+                                  </p>
+                                )}
+                                {(parseFloat(pagoMonto) || 0) > pend && (
+                                  <p className="font-inter text-[11px] text-red-600 dark:text-red-400 mb-2">
+                                    El monto excede lo pendiente
+                                  </p>
+                                )}
+                              </>
+                            )
+                          })()}
                           <select value={pagoMetodo} onChange={e => setPagoMetodo(e.target.value)}
                             className="w-full border-2 border-blue-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-lg p-2 text-sm outline-none focus:border-blue-500 text-gray-800 dark:text-[#e4e6f0] mb-2">
                             <option value="EFECTIVO USD">Efectivo USD</option>
                             <option value="PAGO MÓVIL">Pago Móvil</option>
                             <option value="PUNTO DE VENTA">Punto de Venta</option>
                             <option value="EFECTIVO VES">Efectivo VES</option>
+                            <option value="SALDO A FAVOR">Saldo a Favor del Cliente</option>
                           </select>
                           <button onClick={procesarPagoDeuda} className="w-full bg-blue-600 text-white font-bold py-2 rounded-lg text-sm hover:bg-blue-700 transition-colors">
-                            Confirmar Cobro
+                            {pagoMonto.trim() === '' ? 'Confirmar Cobro Total' : `Registrar Abono de $${(parseFloat(pagoMonto) || 0).toFixed(2)}`}
                           </button>
                         </div>
                       )}
@@ -642,12 +737,36 @@ export default function Clientes() {
                                     <span className="font-inter text-xs text-gray-500 dark:text-gray-400 block">Diferido: {new Date(d.fechaVencimiento).toLocaleDateString()}</span>
                                   </div>
                                   <div className="text-right">
-                                    <span className="font-grotesk font-bold text-lg text-primary dark:text-[#5bb3e8] block">${d.montoUsd.toFixed(2)}</span>
+                                    <span className="font-grotesk font-bold text-lg text-primary dark:text-[#5bb3e8] block">${pendienteDeuda(d).toFixed(2)}</span>
+                                    {(Number((d as any).montoPagadoUsd) || 0) > 0 && d.estado === 'pendiente' && (
+                                      <span className="font-inter text-[10px] text-gray-400 dark:text-gray-500 block">
+                                        de ${d.montoUsd.toFixed(2)}
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
+                                {/* Progreso del abono */}
+                                {(Number((d as any).montoPagadoUsd) || 0) > 0 && d.estado === 'pendiente' && (
+                                  <div className="mt-2">
+                                    <div className="flex justify-between items-center mb-1">
+                                      <span className="font-inter text-[10px] text-green-700 dark:text-green-400">
+                                        Abonado: ${(Number((d as any).montoPagadoUsd) || 0).toFixed(2)}
+                                      </span>
+                                      <span className="font-grotesk text-[10px] text-gray-400 dark:text-gray-500">
+                                        {Math.round(((Number((d as any).montoPagadoUsd) || 0) / (d.montoUsd || 1)) * 100)}%
+                                      </span>
+                                    </div>
+                                    <div className="w-full bg-gray-200 dark:bg-[#2d3148] rounded-full h-1.5 overflow-hidden">
+                                      <div
+                                        className="bg-green-600 h-full rounded-full transition-all duration-500"
+                                        style={{ width: `${Math.min(100, ((Number((d as any).montoPagadoUsd) || 0) / (d.montoUsd || 1)) * 100)}%` }}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
                                 {d.estado === 'pendiente' && !pagoDeudaId && (
-                                  <button onClick={() => setPagoDeudaId(d.id)} className="mt-2 w-full py-1.5 text-xs font-bold font-manrope text-white bg-green-600 rounded-lg focus:outline-none hover:bg-green-700 transition">
-                                    Registrar Pago
+                                  <button onClick={() => { setPagoDeudaId(d.id); setPagoMonto('') }} className="mt-2 w-full py-1.5 text-xs font-bold font-manrope text-white bg-green-600 rounded-lg focus:outline-none hover:bg-green-700 transition">
+                                    {(Number((d as any).montoPagadoUsd) || 0) > 0 ? 'Registrar Otro Abono' : 'Registrar Pago o Abono'}
                                   </button>
                                 )}
                               </div>

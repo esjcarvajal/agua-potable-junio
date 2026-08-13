@@ -18,6 +18,16 @@ export default {
         inter: ['Inter', 'sans-serif'],
         grotesk: ['Space Grotesk', 'sans-serif'],
       },
+      keyframes: {
+        // Parpadeo de alerta critica: pulso suave, no destello duro
+        parpadeoAlerta: {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.45' },
+        },
+      },
+      animation: {
+        parpadeoAlerta: 'parpadeoAlerta 1.2s ease-in-out infinite',
+      },
     },
   },
   plugins: [],
