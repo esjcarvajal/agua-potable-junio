@@ -435,7 +435,9 @@ export default function Inventario() {
               {litrosTanques.map(t => {
                 const pct = Math.min(t.litros / t.capacidad, 1)
                 const pctNum = Math.round(pct * 100)
-                const isLow = t.litros < 200
+                // Alerta gradual: el rojo aparece bajo el 40% y se intensifica
+                // conforme baja el nivel, hasta el máximo con el tanque vacío.
+                const alerta = pctNum >= 40 ? 0 : (40 - pctNum) / 40
                 // El tanque en consumo es el primero con agua: el sistema
                 // vacía los tanques crudos en orden antes de filtrar.
                 const enConsumo = t.id === tanqueEnConsumoId
@@ -443,10 +445,15 @@ export default function Inventario() {
                   <div
                     key={t.id}
                     className={`rounded-lg p-1.5 transition-all ${
-                      enConsumo
-                        ? 'bg-blue-50 dark:bg-[#1a2740] ring-2 ring-primary dark:ring-[#5bb3e8]'
-                        : 'bg-gray-50 dark:bg-[#1a1d27]'
+                      enConsumo ? 'bg-blue-50 dark:bg-[#1a2740]' : 'bg-gray-50 dark:bg-[#1a1d27]'
                     }`}
+                    style={{
+                      boxShadow: enConsumo
+                        ? '0 0 0 2px #005e97'
+                        : alerta > 0
+                          ? `0 0 0 ${1 + alerta}px rgba(220, 38, 38, ${0.25 + alerta * 0.75})`
+                          : undefined,
+                    }}
                     title={`${t.nombre}: ${Math.round(t.litros)}L / ${t.capacidad}L`}
                   >
                     <div className="relative">
@@ -455,8 +462,18 @@ export default function Inventario() {
                         alt={t.nombre}
                         loading="lazy"
                         className="w-full h-auto object-contain"
-                        style={{ opacity: pct < 0.05 ? 0.35 : 1 }}
+                        style={{ opacity: pctNum === 0 ? 0.55 : 1 }}
                       />
+                      {/* Tinte rojo proporcional al vaciado */}
+                      {alerta > 0 && (
+                        <div
+                          className="absolute inset-0 pointer-events-none rounded transition-all duration-700"
+                          style={{
+                            backgroundColor: `rgba(220, 38, 38, ${alerta * 0.45})`,
+                            mixBlendMode: 'multiply',
+                          }}
+                        />
+                      )}
                       {enConsumo && (
                         <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-60 motion-reduce:hidden" />
@@ -468,10 +485,17 @@ export default function Inventario() {
                       <span className="font-grotesk text-[9px] font-bold text-gray-400 dark:text-gray-500">
                         {t.id.replace('TK-', 'T')}
                       </span>
-                      <span className={`font-grotesk text-[10px] font-bold ml-1 ${
-                        isLow ? 'text-tertiary dark:text-amber-500' : 'text-primary dark:text-[#5bb3e8]'
-                      }`}>
-                        {pctNum}%
+                      <span
+                        className="font-grotesk text-[10px] font-bold ml-1"
+                        style={{
+                          color: alerta > 0
+                            ? `rgb(${Math.round(0 + alerta * 220)}, ${Math.round(94 - alerta * 56)}, ${Math.round(151 - alerta * 113)})`
+                            : undefined,
+                        }}
+                      >
+                        <span className={alerta > 0 ? '' : 'text-primary dark:text-[#5bb3e8]'}>
+                          {pctNum}%
+                        </span>
                       </span>
                     </div>
                     {/* Barra de nivel */}
@@ -480,7 +504,9 @@ export default function Inventario() {
                         className="h-full rounded-full transition-all duration-1000 ease-out"
                         style={{
                           width: `${pctNum}%`,
-                          backgroundColor: isLow ? '#8b4800' : '#005e97',
+                          backgroundColor: alerta > 0
+                            ? `rgb(${Math.round(0 + alerta * 220)}, ${Math.round(94 - alerta * 56)}, ${Math.round(151 - alerta * 113)})`
+                            : '#005e97',
                         }}
                       />
                     </div>

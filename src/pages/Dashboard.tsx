@@ -351,16 +351,23 @@ export default function Dashboard() {
                     <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
                         {litrosTanques.map(t => {
                             const pct = Math.round(Math.min((t.litros / 1000) * 100, 100))
-                            const isLow = t.litros < 200
                             const enConsumo = t.id === tanqueEnConsumoId
+                            // Alerta gradual: rojo desde el 40%, más intenso al vaciarse
+                            const alerta = pct >= 40 ? 0 : (40 - pct) / 40
+                            const colorAlerta = `rgb(${Math.round(alerta * 220)}, ${Math.round(94 - alerta * 56)}, ${Math.round(151 - alerta * 113)})`
                             return (
                                 <div
                                     key={t.id}
                                     className={`rounded-lg p-1.5 transition-all ${
-                                        enConsumo
-                                            ? 'bg-blue-50 dark:bg-[#1a2740] ring-2 ring-[#005e97] dark:ring-[#5bb3e8]'
-                                            : 'bg-gray-50 dark:bg-[#1a1d27]'
+                                        enConsumo ? 'bg-blue-50 dark:bg-[#1a2740]' : 'bg-gray-50 dark:bg-[#1a1d27]'
                                     }`}
+                                    style={{
+                                        boxShadow: enConsumo
+                                            ? '0 0 0 2px #005e97'
+                                            : alerta > 0
+                                                ? `0 0 0 ${1 + alerta}px rgba(220, 38, 38, ${0.25 + alerta * 0.75})`
+                                                : undefined,
+                                    }}
                                     title={`${t.nombre}: ${Math.round(t.litros)}L / 1000L`}
                                 >
                                     <div className="relative">
@@ -369,8 +376,17 @@ export default function Dashboard() {
                                             alt={t.nombre}
                                             loading="lazy"
                                             className="w-full h-auto object-contain"
-                                            style={{ opacity: pct < 5 ? 0.35 : 1 }}
+                                            style={{ opacity: pct === 0 ? 0.55 : 1 }}
                                         />
+                                        {alerta > 0 && (
+                                            <div
+                                                className="absolute inset-0 pointer-events-none rounded transition-all duration-700"
+                                                style={{
+                                                    backgroundColor: `rgba(220, 38, 38, ${alerta * 0.45})`,
+                                                    mixBlendMode: 'multiply',
+                                                }}
+                                            />
+                                        )}
                                         {enConsumo && (
                                             <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
                                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#005e97] opacity-60 motion-reduce:hidden" />
@@ -382,16 +398,19 @@ export default function Dashboard() {
                                         <span className="font-grotesk text-[9px] font-bold text-gray-400 dark:text-gray-500">
                                             {t.id.replace('TK-', 'T')}
                                         </span>
-                                        <span className={`font-grotesk text-[10px] font-bold ml-1 ${
-                                            isLow ? 'text-[#8b4800] dark:text-amber-500' : 'text-[#005e97] dark:text-[#5bb3e8]'
-                                        }`}>
+                                        <span
+                                            className={`font-grotesk text-[10px] font-bold ml-1 ${
+                                                alerta > 0 ? '' : 'text-[#005e97] dark:text-[#5bb3e8]'
+                                            }`}
+                                            style={{ color: alerta > 0 ? colorAlerta : undefined }}
+                                        >
                                             {pct}%
                                         </span>
                                     </div>
                                     <div className="mt-1 h-1 w-full rounded-full bg-gray-200 dark:bg-[#2d3148] overflow-hidden">
                                         <div
                                             className="h-full rounded-full transition-all duration-1000 ease-out"
-                                            style={{ width: `${pct}%`, backgroundColor: isLow ? '#8b4800' : '#005e97' }}
+                                            style={{ width: `${pct}%`, backgroundColor: alerta > 0 ? colorAlerta : '#005e97' }}
                                         />
                                     </div>
                                 </div>
