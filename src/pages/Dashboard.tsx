@@ -64,6 +64,13 @@ export default function Dashboard() {
     }, [ventas])
 
     // Agua CRUDA pendiente de filtrar en los tanques de 1.000 L
+    /** El sistema vacía los tanques crudos en orden: el que se consume
+        ahora mismo es el primero que aún tiene agua. */
+    const tanqueEnConsumoId = useMemo(() => {
+        const conAgua = (litrosTanques || []).filter((t: any) => (t.litros || 0) > 0)
+        return conAgua.length > 0 ? conAgua[0].id : null
+    }, [litrosTanques])
+
     const litrosCrudosTotal = useMemo(
         () => (litrosTanques || []).reduce((s: number, t: any) => s + (t.litros || 0), 0),
         [litrosTanques]
@@ -307,23 +314,30 @@ export default function Dashboard() {
                 {/* Panel izquierdo */}
                 <div className="w-full lg:w-[30%]">
                     <h3 className="font-manrope text-lg font-bold text-[#191c1e] dark:text-[#e4e6f0] mb-4">Reservorio Maestro</h3>
-                    <div className="bg-[#e8f4fd] dark:bg-[#1a1d27] rounded-[16px] h-[200px] w-full overflow-hidden relative">
-                        <div 
-                            className="absolute bottom-0 w-full bg-gradient-to-b from-[#0077be] to-[#005e97]"
-                            style={{ height: `${Math.min((litrosJumbo / 2500) * 100, 100)}%`, transition: 'height 1s ease' }}
-                        ></div>
-                        <div className="absolute inset-0 flex items-center justify-center">
-                            <span className="text-white font-grotesk font-bold text-[28px] drop-shadow-md">
+                    <div className="bg-gray-50 dark:bg-[#1a1d27] rounded-[16px] p-3 flex items-center gap-4">
+                        <img
+                            src="/tanques/tanque-2500.webp"
+                            alt="Reservorio Maestro 2.500 L"
+                            loading="lazy"
+                            className="h-[150px] w-auto object-contain flex-shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                            <div className="font-grotesk font-bold text-[34px] leading-none text-[#005e97] dark:text-[#5bb3e8]">
                                 {Math.round((litrosJumbo / 2500) * 100)}%
-                            </span>
-                        </div>
-                    </div>
-                    <div className="mt-4 text-center">
-                        <div className="text-[#005e97] dark:text-[#5bb3e8] text-3xl font-grotesk font-bold">
-                            {Math.round(litrosJumbo)} L
-                        </div>
-                        <div className="text-gray-500 dark:text-gray-400 text-sm font-grotesk font-medium">
-                            MÁX: 2,500 L
+                            </div>
+                            <p className="font-inter text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 mb-2">
+                                de su capacidad
+                            </p>
+                            <div className="h-2.5 w-full rounded-full bg-gray-200 dark:bg-[#2d3148] overflow-hidden">
+                                <div
+                                    className="h-full rounded-full bg-gradient-to-r from-[#0077be] to-[#005e97] transition-all duration-1000 ease-out"
+                                    style={{ width: `${Math.min((litrosJumbo / 2500) * 100, 100)}%` }}
+                                />
+                            </div>
+                            <div className="mt-2 font-grotesk font-bold text-xl text-[#005e97] dark:text-[#5bb3e8]">
+                                {Math.round(litrosJumbo).toLocaleString('es-VE')} L
+                                <span className="text-gray-400 dark:text-gray-500 text-xs font-medium ml-1">/ 2.500 L</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -334,24 +348,55 @@ export default function Dashboard() {
                         ● OPERANDO
                     </div>
                     <h3 className="font-manrope text-lg font-bold text-[#191c1e] dark:text-[#e4e6f0] mb-4">Red de Distribución — 11 Tanques</h3>
-                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-4">
-                        {litrosTanques.map(t => (
-                            <div key={t.id} className="flex flex-col items-center">
-                                <div className="bg-[#e8f4fd] dark:bg-[#1a1d27] rounded-[8px] h-[70px] w-full overflow-hidden relative mb-1">
-                                    <div 
-                                        className="absolute bottom-0 w-full"
-                                        style={{ 
-                                            height: `${Math.min((t.litros / 1000) * 100, 100)}%`, 
-                                            backgroundColor: t.litros < 200 ? '#8b4800' : '#005e97',
-                                            transition: 'height 1s ease, background-color 0.5s ease'
-                                        }}
-                                    ></div>
+                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                        {litrosTanques.map(t => {
+                            const pct = Math.round(Math.min((t.litros / 1000) * 100, 100))
+                            const isLow = t.litros < 200
+                            const enConsumo = t.id === tanqueEnConsumoId
+                            return (
+                                <div
+                                    key={t.id}
+                                    className={`rounded-lg p-1.5 transition-all ${
+                                        enConsumo
+                                            ? 'bg-blue-50 dark:bg-[#1a2740] ring-2 ring-[#005e97] dark:ring-[#5bb3e8]'
+                                            : 'bg-gray-50 dark:bg-[#1a1d27]'
+                                    }`}
+                                    title={`${t.nombre}: ${Math.round(t.litros)}L / 1000L`}
+                                >
+                                    <div className="relative">
+                                        <img
+                                            src="/tanques/tanque-1000.webp"
+                                            alt={t.nombre}
+                                            loading="lazy"
+                                            className="w-full h-auto object-contain"
+                                            style={{ opacity: pct < 5 ? 0.35 : 1 }}
+                                        />
+                                        {enConsumo && (
+                                            <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
+                                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#005e97] opacity-60 motion-reduce:hidden" />
+                                                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#005e97] dark:bg-[#5bb3e8]" />
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="mt-1 text-center leading-none">
+                                        <span className="font-grotesk text-[9px] font-bold text-gray-400 dark:text-gray-500">
+                                            {t.id.replace('TK-', 'T')}
+                                        </span>
+                                        <span className={`font-grotesk text-[10px] font-bold ml-1 ${
+                                            isLow ? 'text-[#8b4800] dark:text-amber-500' : 'text-[#005e97] dark:text-[#5bb3e8]'
+                                        }`}>
+                                            {pct}%
+                                        </span>
+                                    </div>
+                                    <div className="mt-1 h-1 w-full rounded-full bg-gray-200 dark:bg-[#2d3148] overflow-hidden">
+                                        <div
+                                            className="h-full rounded-full transition-all duration-1000 ease-out"
+                                            style={{ width: `${pct}%`, backgroundColor: isLow ? '#8b4800' : '#005e97' }}
+                                        />
+                                    </div>
                                 </div>
-                                <div className={`text-[10px] font-grotesk ${t.litros < 200 ? 'text-red-500 dark:text-red-400 font-bold' : 'text-gray-500 dark:text-gray-400 font-medium'}`}>
-                                    {t.id}
-                                </div>
-                            </div>
-                        ))}
+                            )
+                        })}
                     </div>
                 </div>
             </div>
