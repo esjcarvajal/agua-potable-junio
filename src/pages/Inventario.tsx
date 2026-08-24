@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { insertRow, readSheet } from '../lib/db'
 import {
@@ -151,6 +151,12 @@ export default function Inventario() {
   const agregarMovimiento = (mov: Movimiento) => {
     setMovimientos(prev => [mov, ...prev])
   }
+
+  /** ID del tanque que se está consumiendo ahora mismo */
+  const tanqueEnConsumoId = useMemo(() => {
+    const conAgua = (litrosTanques || []).filter((t: any) => (t.litros || 0) > 0)
+    return conAgua.length > 0 ? conAgua[0].id : null
+  }, [litrosTanques])
 
   const tankPercent = Math.min((litrosJumbo / 2500) * 100, 100)
 
@@ -413,6 +419,8 @@ export default function Inventario() {
         </h2>
         <div className="flex flex-col lg:flex-row gap-4">
           {/* ── Etapa 1: Grid de Tanques de Almacenamiento ───────── */}
+          {/* El sistema vacía los tanques crudos en orden: el que se está
+              consumiendo ahora mismo es el primero que aún tiene agua. */}
           <div className="bg-white dark:bg-[#1e2235] rounded-[12px] p-5 shadow-sm flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-4">
               <Droplets size={16} className="text-primary dark:text-[#5bb3e8]" />
@@ -423,36 +431,62 @@ export default function Inventario() {
                 11 TANQUES
               </span>
             </div>
-            <div className="grid grid-cols-4 grid-rows-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               {litrosTanques.map(t => {
                 const pct = Math.min(t.litros / t.capacidad, 1)
+                const pctNum = Math.round(pct * 100)
                 const isLow = t.litros < 200
+                // El tanque en consumo es el primero con agua: el sistema
+                // vacía los tanques crudos en orden antes de filtrar.
+                const enConsumo = t.id === tanqueEnConsumoId
                 return (
                   <div
                     key={t.id}
-                    className="relative aspect-square rounded-lg overflow-hidden bg-[#e8f4fd] dark:bg-[#1a1d27] group cursor-default"
+                    className={`rounded-lg p-1.5 transition-all ${
+                      enConsumo
+                        ? 'bg-blue-50 dark:bg-[#1a2740] ring-2 ring-primary dark:ring-[#5bb3e8]'
+                        : 'bg-gray-50 dark:bg-[#1a1d27]'
+                    }`}
                     title={`${t.nombre}: ${Math.round(t.litros)}L / ${t.capacidad}L`}
                   >
-                    <div
-                      className="absolute bottom-0 w-full transition-all duration-1000 ease-out"
-                      style={{
-                        height: `${pct * 100}%`,
-                        backgroundColor: isLow ? '#8b4800' : '#005e97',
-                        opacity: Math.max(0.3, pct),
-                      }}
-                    />
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className={`font-grotesk text-[10px] font-bold drop-shadow-sm ${
-                        pct > 0.4 ? 'text-white' : 'text-gray-500 dark:text-gray-400'
-                      }`}>
-                        {t.id.replace('TK-', '')}
+                    <div className="relative">
+                      <img
+                        src="/tanques/tanque-1000.webp"
+                        alt={t.nombre}
+                        loading="lazy"
+                        className="w-full h-auto object-contain"
+                        style={{ opacity: pct < 0.05 ? 0.35 : 1 }}
+                      />
+                      {enConsumo && (
+                        <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-60 motion-reduce:hidden" />
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-primary dark:bg-[#5bb3e8]" />
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 text-center leading-none">
+                      <span className="font-grotesk text-[9px] font-bold text-gray-400 dark:text-gray-500">
+                        {t.id.replace('TK-', 'T')}
                       </span>
+                      <span className={`font-grotesk text-[10px] font-bold ml-1 ${
+                        isLow ? 'text-tertiary dark:text-amber-500' : 'text-primary dark:text-[#5bb3e8]'
+                      }`}>
+                        {pctNum}%
+                      </span>
+                    </div>
+                    {/* Barra de nivel */}
+                    <div className="mt-1 h-1 w-full rounded-full bg-gray-200 dark:bg-[#2d3148] overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-1000 ease-out"
+                        style={{
+                          width: `${pctNum}%`,
+                          backgroundColor: isLow ? '#8b4800' : '#005e97',
+                        }}
+                      />
                     </div>
                   </div>
                 )
               })}
-              {/* Celda 12 vacía */}
-              <div className="aspect-square rounded-lg bg-gray-50 dark:bg-[#1a1d27] opacity-30" />
             </div>
             <div className="mt-3 text-center">
               <span className="font-grotesk text-xs text-gray-400 dark:text-gray-500">
@@ -483,16 +517,30 @@ export default function Inventario() {
                 MÁX 2,500 L
               </span>
             </div>
-            {/* Tank Visual — mismo estilo Dashboard */}
-            <div className="bg-[#e8f4fd] dark:bg-[#1a1d27] rounded-[16px] h-[160px] w-full overflow-hidden relative">
-              <div
-                className="absolute bottom-0 w-full bg-gradient-to-b from-[#0077be] to-[#005e97]"
-                style={{ height: `${tankPercent}%`, transition: 'height 1s ease' }}
+            {/* Reservorio: foto real con nivel de llenado */}
+            <div className="rounded-[16px] bg-gray-50 dark:bg-[#1a1d27] p-3 flex items-center gap-4">
+              <img
+                src="/tanques/tanque-2500.webp"
+                alt="Reservorio Maestro 2.500 L"
+                loading="lazy"
+                className="h-[150px] w-auto object-contain flex-shrink-0"
               />
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-white font-grotesk font-bold text-[28px] drop-shadow-md">
+              <div className="flex-1 min-w-0">
+                <div className="font-grotesk font-bold text-[34px] leading-none text-primary dark:text-[#5bb3e8]">
                   {Math.round(tankPercent)}%
-                </span>
+                </div>
+                <p className="font-inter text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 mb-2">
+                  de su capacidad
+                </p>
+                <div className="h-2.5 w-full rounded-full bg-gray-200 dark:bg-[#2d3148] overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-[#0077be] to-[#005e97] transition-all duration-1000 ease-out"
+                    style={{ width: `${tankPercent}%` }}
+                  />
+                </div>
+                <p className="font-inter text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+                  Agua filtrada lista para despacho
+                </p>
               </div>
             </div>
             <div className="mt-3 flex items-center justify-between">

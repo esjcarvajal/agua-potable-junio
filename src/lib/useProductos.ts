@@ -24,6 +24,11 @@ export const PRODUCTOS_DEFAULT: ProductoConfig[] = [
   { id: 'p11', nombre: 'Dispensador de Agua', precioUsd: 0,   costoUsd: 0 },
   { id: 'p12', nombre: 'Agarraderos Manuales', precioUsd: 0,  costoUsd: 0 },
   { id: 'p13', nombre: 'Cepillos de Lavado', precioUsd: 0,    costoUsd: 0 },
+  // Desinfeccion: precio LIBRE, se indica en cada venta segun el trabajo.
+  // El precio aqui es solo un valor sugerido inicial.
+  { id: 'p14', nombre: 'Desinfección 19L',   precioUsd: 0,    costoUsd: 0 },
+  { id: 'p15', nombre: 'Desinfección 12L',   precioUsd: 0,    costoUsd: 0 },
+  { id: 'p16', nombre: 'Desinfección 8L',    precioUsd: 0,    costoUsd: 0 },
 ]
 
 /** Lee los productos desde localStorage (síncrono) */

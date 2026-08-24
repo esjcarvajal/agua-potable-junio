@@ -103,14 +103,16 @@ export async function generarCierreAutomatico(): Promise<Record<string, unknown>
     try {
       const items = JSON.parse(v.items_json || '[]')
       items.forEach((item: any) => {
-        if (item.producto?.esRecarga) {
+        // La desinfección incluye la recarga: también consume agua e insumos
+        const esDesinf = !!item.producto?.esDesinfeccion
+        if (item.producto?.esRecarga || esDesinf) {
           litrosVendidos += (item.producto.litros || 0) * (item.cantidad || 1)
-          // Tapas: SOLO recargas de 19L y 12L (misma regla que el POS)
+          // Tapas: SOLO 19L y 12L (misma regla que el POS)
           const litros = item.producto.litros
           if (litros === 19 || litros === 12) {
             tapasUsadas += item.cantidad || 1
-            // Precintos y etiquetas: solo en delivery
-            if (v.es_delivery) precintosUsados += item.cantidad || 1
+            // Precintos: en recarga solo con delivery; en desinfección siempre
+            if (esDesinf || v.es_delivery) precintosUsados += item.cantidad || 1
           }
         }
         if (item.producto) {

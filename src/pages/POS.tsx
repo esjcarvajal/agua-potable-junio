@@ -65,6 +65,10 @@ interface Producto {
   precio: number
   litros: number
   esRecarga: boolean
+  /** Servicio de desinfección: incluye la recarga en el precio.
+      Descuenta agua, y ademas tapa y precinto en 19L y 12L.
+      El precio es LIBRE: se indica en cada venta. */
+  esDesinfeccion?: boolean
 }
 
 interface CarritoItem {
@@ -96,6 +100,10 @@ const PRODUCTOS_DEFAULT_POS: Producto[] = [
   { id: 'p12', nombre: 'Agarraderos Manuales', precio: 0,  litros: 0,  esRecarga: false },
   { id: 'p11', nombre: 'Dispensador de Agua', precio: 0,   litros: 0,  esRecarga: false },
   { id: 'p13', nombre: 'Cepillos de Lavado', precio: 0,    litros: 0,  esRecarga: false },
+  // Desinfección: la recarga va incluida en el precio del servicio
+  { id: 'p14', nombre: 'Desinfección 19L',   precio: 0,    litros: 19, esRecarga: false, esDesinfeccion: true },
+  { id: 'p15', nombre: 'Desinfección 12L',   precio: 0,    litros: 12, esRecarga: false, esDesinfeccion: true },
+  { id: 'p16', nombre: 'Desinfección 8L',    precio: 0,    litros: 8,  esRecarga: false, esDesinfeccion: true },
 ]
 
 const TIPOS_BOTELLON_DEFAULT = [
@@ -372,6 +380,11 @@ export default function POS() {
   /** Motivo de la cortesia. Opcional, pero queda registrado en la venta
       para que toda salida de inventario sin cobro sea trazable. */
   const [motivoCortesia, setMotivoCortesia] = useState('')
+  /** Desinfección: el precio es libre y se indica al agregarla al carrito */
+  const [desinfeccionPendiente, setDesinfeccionPendiente] = useState<Producto | null>(null)
+  const [desinfeccionPrecio, setDesinfeccionPrecio] = useState('')
+  /** Evita repetir el aviso de recarga redundante en el segundo intento */
+  const [confirmoRecargaExtra, setConfirmoRecargaExtra] = useState(false)
   // ── Precios sincronizados desde Firebase (reactivo entre dispositivos) ──
   const productosSync = useProductos()
 
@@ -409,6 +422,10 @@ export default function POS() {
   const [prepagoCantidad, setPrepagoCantidad] = useState(1)
   const [prepagoPrecio, setPrepagoPrecio] = useState('1.50')
   const [prepagoMetodo, setPrepagoMetodo] = useState<MetodoPago | ''>('')
+  /** Precio del delivery por botellón en el prepago. Vacío o 0 = sin delivery.
+      Los deliveries se cuentan aparte de las recargas: si el cliente busca
+      su botellón, gasta recarga pero no delivery. */
+  const [prepagoDeliveryPrecio, setPrepagoDeliveryPrecio] = useState('')
 
   // ── Saldo a favor: modal y aplicacion en el cobro ─────────────
   const [showSaldoFavor, setShowSaldoFavor] = useState(false)
@@ -496,6 +513,40 @@ export default function POS() {
   const saldoDisponible = clienteSeleccionado
     ? Math.max(0, parseFloat(clienteSeleccionado.saldo_usd) || 0)
     : 0
+  /* ── Resumen de saldos del cliente, agrupado por litraje ──────────
+     Recargas y deliveries son contadores INDEPENDIENTES: si el cliente
+     busca su botellón gasta recarga pero no delivery, y ese delivery
+     le queda disponible (convertible a saldo a favor). */
+  const resumenSaldos = useMemo(() => {
+    if (!clienteSeleccionado) return { lineas: [] as any[], deliveriesSueltos: 0, valorDeliveriesSueltos: 0 }
+    const porLitraje: Record<number, any> = {}
+    let deliveriesSueltos = 0
+    let valorDeliveriesSueltos = 0
+
+    for (const p of clientePrepagos) {
+      const litros = parseInt(p.tipo_botellon || '') || 0
+      if (!litros) continue
+      const recargas = Math.max(0, (p.recargas_compradas ?? 0) - (p.recargas_usadas ?? 0))
+      const deliveries = Math.max(0, (p.deliveries_comprados ?? 0) - (p.deliveries_usados ?? 0))
+      if (recargas <= 0 && deliveries <= 0) continue
+
+      if (!porLitraje[litros]) porLitraje[litros] = { litros, conDelivery: 0, sinDelivery: 0 }
+      // Las recargas que tienen delivery reservado van a "con delivery"
+      const conDeliv = Math.min(recargas, deliveries)
+      porLitraje[litros].conDelivery += conDeliv
+      porLitraje[litros].sinDelivery += recargas - conDeliv
+
+      // Deliveries que sobran sin recarga que los acompañe
+      const sobrantes = Math.max(0, deliveries - recargas)
+      if (sobrantes > 0) {
+        deliveriesSueltos += sobrantes
+        valorDeliveriesSueltos += sobrantes * (parseFloat(p.precio_delivery_usd) || 0)
+      }
+    }
+    const lineas = Object.values(porLitraje).sort((a: any, b: any) => b.litros - a.litros)
+    return { lineas, deliveriesSueltos, valorDeliveriesSueltos: parseFloat(valorDeliveriesSueltos.toFixed(2)) }
+  }, [clienteSeleccionado?.id, clientePrepagos])
+
   // Deuda pendiente del cliente seleccionado
   const deudaCliente = clienteSeleccionado
     ? Math.max(0, parseFloat(clienteSeleccionado.deudaTotalUsd) || 0)
@@ -536,8 +587,39 @@ export default function POS() {
   const hayCritico = criticoItems.length > 0
 
   // ── Handlers ───────────────────────────────────────────────────
+  /** Confirma el precio libre de una desinfección y la agrega al carrito */
+  const confirmarDesinfeccion = () => {
+    if (!desinfeccionPendiente) return
+    const precio = parseFloat(desinfeccionPrecio) || 0
+    if (precio <= 0) {
+      showToast('Indica el precio de la desinfección', 'error')
+      return
+    }
+    agregarAlCarrito({ ...desinfeccionPendiente, precio })
+    setDesinfeccionPendiente(null)
+    setDesinfeccionPrecio('')
+  }
+
+  /** Punto de entrada del grid: la desinfección pide precio antes de entrar */
+  const seleccionarProducto = (producto: Producto) => {
+    if (producto.esDesinfeccion) {
+      setDesinfeccionPendiente(producto)
+      setDesinfeccionPrecio(producto.precio > 0 ? String(producto.precio) : '')
+      return
+    }
+    agregarAlCarrito(producto)
+  }
+
   const agregarAlCarrito = (producto: Producto) => {
     setCarrito(prev => {
+      // Cada desinfección lleva su propio precio: nunca se agrupa con otra
+      if (producto.esDesinfeccion) {
+        return [...prev, {
+          producto: { ...producto, id: `${producto.id}#${Date.now()}` },
+          cantidad: 1,
+          cantidadPrepago: 0,
+        }]
+      }
       const existente = prev.find(i => i.producto.id === producto.id)
       if (existente) {
         return prev.map(i =>
@@ -613,6 +695,9 @@ export default function POS() {
       })
       .reduce((sum: number, p: any) => sum + ((p.recargas_compradas ?? 0) - (p.recargas_usadas ?? 0)), 0)
   }
+
+  // Si cambia el carrito, volver a avisar sobre recargas redundantes
+  useEffect(() => { setConfirmoRecargaExtra(false) }, [carrito.length])
 
   // Al cambiar de cliente, el saldo aplicado deja de ser válido
   useEffect(() => {
@@ -749,6 +834,38 @@ export default function POS() {
     )
   }
 
+  /** Convierte los deliveries no usados en saldo a favor del cliente.
+      Ocurre cuando el cliente busca su botellón en vez de pedir entrega:
+      el delivery ya pagado queda disponible y puede transformarse en dinero. */
+  const convertirDeliveriesEnSaldo = async () => {
+    if (!clienteSeleccionado) return
+    const { deliveriesSueltos, valorDeliveriesSueltos } = resumenSaldos
+    if (deliveriesSueltos <= 0 || valorDeliveriesSueltos <= 0) {
+      showToast('No hay deliveries sin usar para convertir', 'error')
+      return
+    }
+
+    // Marcar como usados los deliveries que no tienen recarga asociada
+    for (const p of clientePrepagos) {
+      const recargas = Math.max(0, (p.recargas_compradas ?? 0) - (p.recargas_usadas ?? 0))
+      const deliveries = Math.max(0, (p.deliveries_comprados ?? 0) - (p.deliveries_usados ?? 0))
+      const sobrantes = Math.max(0, deliveries - recargas)
+      if (sobrantes <= 0) continue
+      const nuevoUsados = (p.deliveries_usados ?? 0) + sobrantes
+      const actualizados = store.prepagos.map((sp: any) =>
+        sp.id === p.id ? { ...sp, deliveries_usados: nuevoUsados } : sp
+      )
+      useAppStore.setState({ prepagos: actualizados })
+      updateRow('prepagos', p.id, { deliveries_usados: nuevoUsados })
+    }
+
+    await store.abonarSaldoFavor(clienteSeleccionado.id, valorDeliveriesSueltos)
+    showToast(
+      `${deliveriesSueltos} delivery(s) convertido(s) en $${valorDeliveriesSueltos.toFixed(2)} de saldo a favor`,
+      'success'
+    )
+  }
+
   /** Registra un abono directo al saldo a favor, sin comprar producto */
   const registrarSaldoFavor = async () => {
     if (!clienteSeleccionado) {
@@ -803,7 +920,12 @@ export default function POS() {
     }
 
     const precioUnitario = parseFloat(prepagoPrecio) || 0
-    const totalPrepago = precioUnitario * prepagoCantidad
+    const precioDelivery = parseFloat(prepagoDeliveryPrecio) || 0
+    const conDelivery = precioDelivery > 0
+    // El delivery se cobra POR BOTELLÓN, no por viaje
+    const totalRecargas = precioUnitario * prepagoCantidad
+    const totalDeliveries = precioDelivery * prepagoCantidad
+    const totalPrepago = totalRecargas + totalDeliveries
     const tipoLabel = `${prepagoTipoLitros}L`
 
     const prepago = {
@@ -812,7 +934,11 @@ export default function POS() {
       tipo_botellon: tipoLabel,
       recargas_compradas: prepagoCantidad,
       recargas_usadas: 0,
+      // Contadores de delivery, independientes de las recargas
+      deliveries_comprados: conDelivery ? prepagoCantidad : 0,
+      deliveries_usados: 0,
       precio_usd: precioUnitario,
+      precio_delivery_usd: precioDelivery,
       fecha_compra: new Date().toISOString(),
       activo: true,
     }
@@ -826,17 +952,29 @@ export default function POS() {
       hora: new Date().toLocaleTimeString(),
       cliente_id: clienteSeleccionado.id,
       cliente_nombre: clienteSeleccionado.nombre || 'Cliente',
-      items_json: JSON.stringify([{ tipo: 'ABONO_PREPAGO', tipo_botellon: tipoLabel, cantidad: prepagoCantidad, precio_usd: precioUnitario }]),
+      items_json: JSON.stringify([{
+        tipo: 'ABONO_PREPAGO', tipo_botellon: tipoLabel, cantidad: prepagoCantidad,
+        precio_usd: precioUnitario,
+        deliveries: conDelivery ? prepagoCantidad : 0,
+        precio_delivery_usd: precioDelivery,
+      }]),
       total_usd: totalPrepago,
       tasa_bcv: store.tasaBcv.valor,
       metodo_pago: prepagoMetodo,
       es_delivery: false,
       costo_delivery_usd: 0,
-      notas: `ABONO PREPAGO: ${prepagoCantidad} recargas de ${tipoLabel}`,
+      notas: conDelivery
+        ? `ABONO PREPAGO: ${prepagoCantidad} recargas de ${tipoLabel} ($${totalRecargas.toFixed(2)}) + ${prepagoCantidad} deliveries ($${totalDeliveries.toFixed(2)})`
+        : `ABONO PREPAGO: ${prepagoCantidad} recargas de ${tipoLabel}`,
     }
     await store.agregarVenta(ventaAbono)
 
-    showToast(`Prepago registrado — ${prepagoCantidad} recargas de ${tipoLabel} para ${clienteSeleccionado.nombre}`, 'success')
+    showToast(
+      conDelivery
+        ? `Prepago registrado — ${prepagoCantidad} recargas de ${tipoLabel} con delivery · $${totalPrepago.toFixed(2)}`
+        : `Prepago registrado — ${prepagoCantidad} recargas de ${tipoLabel} para ${clienteSeleccionado.nombre}`,
+      'success'
+    )
 
     // Reset modal state
     setShowPrepago(false)
@@ -859,8 +997,11 @@ export default function POS() {
     }
 
     // 3. Calcular totalLitros
+    // La desinfección incluye la recarga, así que también consume agua
     const totalLitros = carrito.reduce((sum, item) =>
-      item.producto.esRecarga ? sum + item.producto.litros * item.cantidad : sum
+      (item.producto.esRecarga || item.producto.esDesinfeccion)
+        ? sum + item.producto.litros * item.cantidad
+        : sum
     , 0)
 
 
@@ -877,6 +1018,23 @@ export default function POS() {
         showToast(`Límite de crédito excedido. Monto máximo disponible: $${Math.max(0, limite - actual).toFixed(2)}`, 'error')
         return
       }
+    }
+
+    // 4.55. Avisar si hay desinfección Y recarga del mismo litraje:
+    // la desinfección ya incluye la recarga en su precio.
+    const litrajesDesinfectados = new Set(
+      carrito.filter(i => i.producto.esDesinfeccion).map(i => i.producto.litros)
+    )
+    const recargaRedundante = carrito.find(
+      i => i.producto.esRecarga && litrajesDesinfectados.has(i.producto.litros)
+    )
+    if (recargaRedundante && !confirmoRecargaExtra) {
+      showToast(
+        `La desinfección de ${recargaRedundante.producto.litros}L ya incluye la recarga. Pulsa cobrar otra vez si aun así quieres añadirla.`,
+        'warning'
+      )
+      setConfirmoRecargaExtra(true)
+      return
     }
 
     // 4.6. Validar prepagos contra disponibilidad ACTUAL
@@ -974,12 +1132,26 @@ export default function POS() {
     //    - Tapas:     solo recargas de 19L y 12L (no 8L ni 5L)
     //    - Precintos: solo en delivery, y solo para 19L y 12L
     //    - Etiquetas: solo en delivery, y solo para 19L y 12L
+    // Tapas: recargas y desinfecciones de 19L y 12L (no 8L ni 5L)
+    const esTapable = (p: Producto) =>
+      (p.esRecarga || p.esDesinfeccion) && (p.litros === 19 || p.litros === 12)
     const tapasUsadas = carrito
+      .filter(item => esTapable(item.producto))
+      .reduce((sum, item) => sum + item.cantidad, 0)
+
+    // Precintos:
+    //   - Recargas: solo en delivery
+    //   - Desinfecciones 19L y 12L: SIEMPRE (el botellón se entrega sellado)
+    const precintosRecarga = carrito
       .filter(item => item.producto.esRecarga &&
         (item.producto.litros === 19 || item.producto.litros === 12))
       .reduce((sum, item) => sum + item.cantidad, 0)
-    const precintosUsados = isDelivery ? tapasUsadas : 0
-    const etiquetasUsadas = isDelivery ? tapasUsadas : 0
+    const precintosDesinfeccion = carrito
+      .filter(item => item.producto.esDesinfeccion &&
+        (item.producto.litros === 19 || item.producto.litros === 12))
+      .reduce((sum, item) => sum + item.cantidad, 0)
+    const precintosUsados = (isDelivery ? precintosRecarga : 0) + precintosDesinfeccion
+    const etiquetasUsadas = isDelivery ? precintosRecarga : 0
     if (tapasUsadas > 0 || precintosUsados > 0 || etiquetasUsadas > 0) {
       store.descontarInsumos(tapasUsadas, precintosUsados, etiquetasUsadas)
     }
@@ -1022,13 +1194,22 @@ export default function POS() {
         const disponibles = (p.recargas_compradas ?? 0) - (p.recargas_usadas ?? 0)
         const usar = Math.min(disponibles, recargasPendientes)
         const nuevoUsadas = (p.recargas_usadas ?? 0) + usar
-        // Update locally in store
+
+        // El delivery se consume APARTE y solo si la entrega es a domicilio.
+        // Si el cliente busca su botellón, gasta recarga pero no delivery:
+        // ese delivery le queda disponible para otra entrega.
+        const delivDisponibles = (p.deliveries_comprados ?? 0) - (p.deliveries_usados ?? 0)
+        const usarDeliv = isDelivery ? Math.min(delivDisponibles, usar) : 0
+        const nuevoDelivUsados = (p.deliveries_usados ?? 0) + usarDeliv
+
+        const cambios: any = { recargas_usadas: nuevoUsadas }
+        if (usarDeliv > 0) cambios.deliveries_usados = nuevoDelivUsados
+
         const updatedPrepagos = store.prepagos.map((sp: any) =>
-          sp.id === p.id ? { ...sp, recargas_usadas: nuevoUsadas } : sp
+          sp.id === p.id ? { ...sp, ...cambios } : sp
         )
         useAppStore.setState({ prepagos: updatedPrepagos })
-        // Sincronizar con Firebase
-        updateRow('prepagos', p.id, { recargas_usadas: nuevoUsadas })
+        updateRow('prepagos', p.id, cambios)
         recargasPendientes -= usar
       }
     }
@@ -1162,25 +1343,37 @@ export default function POS() {
           {productosList.map(p => (
             <button
               key={p.id}
-              onClick={() => agregarAlCarrito(p)}
+              onClick={() => seleccionarProducto(p)}
               className="bg-white dark:bg-[#1e2235] rounded-xl p-4 text-left cursor-pointer border-2 border-transparent
                 hover:border-primary dark:hover:border-[#5bb3e8] hover:bg-[#f0f7ff] dark:hover:bg-[#1a1d27] transition-all duration-200 shadow-sm
                 active:scale-[0.97] group"
             >
-              <ImagenProducto id={p.id} nombre={p.nombre} esRecarga={p.esRecarga} />
+              <ImagenProducto id={p.esDesinfeccion ? 'desinfeccion' : p.id} nombre={p.nombre} esRecarga={p.esRecarga} />
               <div className="font-inter font-bold text-sm text-onSurface dark:text-[#e4e6f0] mb-2 group-hover:text-primary dark:group-hover:text-[#5bb3e8] transition-colors">
                 {p.nombre}
               </div>
-              <div className="font-grotesk text-[22px] font-bold text-primary dark:text-[#5bb3e8] leading-tight">
-                ${p.precio.toFixed(2)}
-              </div>
-              <div className="font-grotesk text-xs text-gray-400 dark:text-gray-500 mt-0.5">
-                {usdToVes(p.precio)}
-              </div>
-              {p.esRecarga && (
+              {p.esDesinfeccion ? (
+                <div className="font-grotesk text-[15px] font-bold text-tertiary dark:text-amber-500 leading-tight py-[5px]">
+                  Precio libre
+                </div>
+              ) : (
+                <>
+                  <div className="font-grotesk text-[22px] font-bold text-primary dark:text-[#5bb3e8] leading-tight">
+                    ${p.precio.toFixed(2)}
+                  </div>
+                  <div className="font-grotesk text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                    {usdToVes(p.precio)}
+                  </div>
+                </>
+              )}
+              {(p.esRecarga || p.esDesinfeccion) && (
                 <div className="mt-2">
-                  <span className="inline-block bg-blue-50 dark:bg-[#1a1d27] text-primary dark:text-[#5bb3e8] text-[10px] font-bold font-grotesk px-2 py-0.5 rounded-full tracking-wide">
-                    {p.litros}L
+                  <span className={`inline-block text-[10px] font-bold font-grotesk px-2 py-0.5 rounded-full tracking-wide ${
+                    p.esDesinfeccion
+                      ? 'bg-amber-50 dark:bg-amber-900/20 text-tertiary dark:text-amber-500'
+                      : 'bg-blue-50 dark:bg-[#1a1d27] text-primary dark:text-[#5bb3e8]'
+                  }`}>
+                    {p.litros}L{p.esDesinfeccion ? ' · incluye recarga' : ''}
                   </span>
                 </div>
               )}
@@ -1260,6 +1453,8 @@ export default function POS() {
           clienteNivel={clienteNivel}
           onShowPrepago={() => setShowPrepago(true)}
           onShowSaldoFavor={() => setShowSaldoFavor(true)}
+          resumenSaldos={resumenSaldos}
+          onConvertirDeliveries={convertirDeliveriesEnSaldo}
           hayDeudaCompensable={hayDeudaCompensable}
           deudaCliente={deudaCliente}
           deudaCubrible={deudaCubrible}
@@ -1336,6 +1531,8 @@ export default function POS() {
                 clienteNivel={clienteNivel}
                 onShowPrepago={() => setShowPrepago(true)}
                 onShowSaldoFavor={() => setShowSaldoFavor(true)}
+                resumenSaldos={resumenSaldos}
+                onConvertirDeliveries={convertirDeliveriesEnSaldo}
                 hayDeudaCompensable={hayDeudaCompensable}
                 deudaCliente={deudaCliente}
                 deudaCubrible={deudaCubrible}
@@ -1418,6 +1615,70 @@ export default function POS() {
                 onClick={agregarManual}
                 className="flex-1 py-3 rounded-xl font-manrope font-bold text-white shadow-md transition-colors"
                 style={{ background: 'linear-gradient(135deg, #005e97, #0077be)' }}
+              >
+                Agregar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ──────────────────── MODAL PRECIO DESINFECCIÓN ─────────────────── */}
+      {desinfeccionPendiente && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => { setDesinfeccionPendiente(null); setDesinfeccionPrecio('') }} />
+          <div className="relative bg-white dark:bg-[#1e2235] rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-manrope font-bold text-lg text-onSurface dark:text-[#e4e6f0]">
+                  {desinfeccionPendiente.nombre}
+                </h3>
+                <p className="font-inter text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Precio según el trabajo requerido
+                </p>
+              </div>
+              <button onClick={() => { setDesinfeccionPendiente(null); setDesinfeccionPrecio('') }} className="text-gray-400 hover:text-gray-600 dark:hover:text-[#5bb3e8]">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-xl px-3 py-2.5 mb-4">
+              <p className="font-inter text-[11px] text-amber-800 dark:text-amber-500">
+                Incluye la recarga de <span className="font-grotesk font-bold">{desinfeccionPendiente.litros} L</span>
+                {(desinfeccionPendiente.litros === 19 || desinfeccionPendiente.litros === 12)
+                  ? ' · descuenta tapa y precinto'
+                  : ' · sin tapa ni precinto'}
+              </p>
+            </div>
+
+            <label className="block text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">
+              PRECIO DEL SERVICIO (USD)
+            </label>
+            <input
+              type="number" min="0" step="0.01" placeholder="0.00" autoFocus
+              value={desinfeccionPrecio}
+              onChange={e => setDesinfeccionPrecio(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') confirmarDesinfeccion() }}
+              className="w-full border border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-xl px-4 py-3 font-grotesk font-bold text-lg
+                outline-none focus:border-primary dark:focus:border-[#5bb3e8] text-gray-800 dark:text-[#e4e6f0]"
+            />
+            {(parseFloat(desinfeccionPrecio) || 0) > 0 && (
+              <p className="font-grotesk text-sm text-primary dark:text-[#5bb3e8] mt-1.5">
+                {usdToVes(parseFloat(desinfeccionPrecio) || 0)}
+              </p>
+            )}
+
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => { setDesinfeccionPendiente(null); setDesinfeccionPrecio('') }}
+                className="flex-1 py-3 rounded-xl border border-gray-200 dark:border-[#2d3148] font-manrope font-bold text-sm text-gray-600 dark:text-gray-400
+                  hover:bg-gray-50 dark:hover:bg-[#2d3148] transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarDesinfeccion}
+                className="flex-1 py-3 rounded-xl bg-primary text-white font-manrope font-bold text-sm hover:bg-primaryContainer transition-colors"
               >
                 Agregar
               </button>
@@ -1593,7 +1854,10 @@ export default function POS() {
       {/* ──────────────────────── MODAL PREPAGO ─────────────────────────── */}
       {showPrepago && clienteSeleccionado && (() => {
         const precioNum = parseFloat(prepagoPrecio) || 0
-        const totalPrepago = precioNum * prepagoCantidad
+        const delivNum = parseFloat(prepagoDeliveryPrecio) || 0
+        const totalRecargasModal = precioNum * prepagoCantidad
+        const totalDeliveriesModal = delivNum * prepagoCantidad
+        const totalPrepago = totalRecargasModal + totalDeliveriesModal
         return (
           <div className="absolute inset-0 z-50 flex items-center justify-center">
             <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowPrepago(false)} />
@@ -1648,6 +1912,27 @@ export default function POS() {
                 />
               </div>
 
+              {/* Precio del delivery por botellón (opcional) */}
+              <div className="mb-4">
+                <label className="block text-sm font-bold text-gray-600 dark:text-gray-400 mb-1.5 font-manrope">
+                  Delivery por botellón (USD) — opcional
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={prepagoDeliveryPrecio}
+                  onChange={e => setPrepagoDeliveryPrecio(e.target.value)}
+                  className="w-full border-2 border-gray-200 dark:border-[#2d3148] dark:bg-[#1a1d27] dark:text-[#e4e6f0] rounded-xl p-3 font-grotesk text-lg font-bold text-primary dark:text-[#5bb3e8]
+                    outline-none focus:border-primary transition-colors"
+                />
+                <p className="font-inter text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                  Déjalo vacío si el prepago no incluye entregas. El delivery se
+                  cuenta por botellón y se descuenta solo cuando hay entrega a domicilio.
+                </p>
+              </div>
+
               {/* Cantidad de recargas */}
               <div className="mb-5">
                 <label className="block text-sm font-bold text-gray-600 mb-1.5 font-manrope">Cantidad de recargas</label>
@@ -1665,8 +1950,15 @@ export default function POS() {
               <div className="bg-gray-50 dark:bg-[#1a1d27] rounded-xl p-4 mb-5 border border-gray-100 dark:border-[#2d3148]">
                 <p className="text-xs font-manrope font-bold text-gray-400 dark:text-gray-500 tracking-wider mb-2">RESUMEN</p>
                 <div className="font-inter text-sm text-gray-700 dark:text-[#e4e6f0] mb-1">
-                  Total: <span className="font-bold">{prepagoCantidad}</span> recargas × <span className="font-grotesk font-bold text-primary dark:text-[#5bb3e8]">${precioNum.toFixed(2)}</span>
+                  <span className="font-bold">{prepagoCantidad}</span> recargas × <span className="font-grotesk font-bold text-primary dark:text-[#5bb3e8]">${precioNum.toFixed(2)}</span>
+                  <span className="font-grotesk float-right">${totalRecargasModal.toFixed(2)}</span>
                 </div>
+                {delivNum > 0 && (
+                  <div className="font-inter text-sm text-gray-700 dark:text-[#e4e6f0] mb-1">
+                    <span className="font-bold">{prepagoCantidad}</span> deliveries × <span className="font-grotesk font-bold text-primary dark:text-[#5bb3e8]">${delivNum.toFixed(2)}</span>
+                    <span className="font-grotesk float-right">${totalDeliveriesModal.toFixed(2)}</span>
+                  </div>
+                )}
                 <div className="font-grotesk text-2xl font-bold text-onSurface dark:text-[#e4e6f0]">
                   ${totalPrepago.toFixed(2)} USD
                 </div>
@@ -1900,6 +2192,8 @@ interface OrderPanelProps {
   clienteNivel: { label: string; color: string; bg: string } | null
   onShowPrepago: () => void
   onShowSaldoFavor: () => void
+  resumenSaldos: { lineas: any[]; deliveriesSueltos: number; valorDeliveriesSueltos: number }
+  onConvertirDeliveries: () => void
   hayDeudaCompensable: boolean
   deudaCliente: number
   deudaCubrible: number
@@ -1940,6 +2234,7 @@ function OrderPanel({
   clientesFilterResults, clienteSeleccionado, setClienteSeleccionado,
   clientePrepagosCount, clientePrepagosDetalle, clienteNivel,
   onShowPrepago, onShowSaldoFavor, saldoDisponible, saldoAplicado, onToggleSaldo,
+  resumenSaldos, onConvertirDeliveries,
   hayDeudaCompensable, deudaCliente, deudaCubrible, onCompensarDeuda,
   montoRecibido, setMontoRecibido, montoRecibidoVes, setMontoRecibidoVes,
   vueltoDisponible, guardarVuelto, setGuardarVuelto,
@@ -2023,6 +2318,94 @@ function OrderPanel({
                     style={{ background: '#dc2626' }}>
                     DEUDA: ${deudaCliente.toFixed(2)}
                   </span>
+                )}
+              </div>
+            )}
+
+            {/* Resumen de saldos del cliente por litraje */}
+            {clienteSeleccionado && (resumenSaldos.lineas.length > 0 || deudaCliente > 0) && (
+              <div className="mt-2 mx-1 rounded-xl border border-gray-200 dark:border-[#2d3148] bg-gray-50 dark:bg-[#1a1d27] overflow-hidden">
+                <div className="px-3 pt-2 pb-1">
+                  <p className="font-manrope font-bold text-[10px] text-gray-400 dark:text-gray-500 tracking-wider">
+                    SALDOS DEL CLIENTE
+                  </p>
+                </div>
+
+                {/* Recargas prepagadas, agrupadas por litraje */}
+                {resumenSaldos.lineas.map((l: any) => (
+                  <div key={l.litros} className="px-3 py-1">
+                    {l.conDelivery > 0 && (
+                      <div className="flex items-center justify-between gap-2 py-[3px]">
+                        <span className="font-inter text-[11px] text-gray-600 dark:text-gray-400 truncate">
+                          Recargas {l.litros}L <span className="text-green-700 dark:text-green-500 font-bold">con delivery</span>
+                        </span>
+                        <span className="font-grotesk font-bold text-sm text-green-700 dark:text-green-400 tabular-nums flex-shrink-0">
+                          {l.conDelivery}
+                        </span>
+                      </div>
+                    )}
+                    {l.sinDelivery > 0 && (
+                      <div className="flex items-center justify-between gap-2 py-[3px]">
+                        <span className="font-inter text-[11px] text-gray-600 dark:text-gray-400 truncate">
+                          Recargas {l.litros}L
+                        </span>
+                        <span className="font-grotesk font-bold text-sm text-green-700 dark:text-green-400 tabular-nums flex-shrink-0">
+                          {l.sinDelivery}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {/* Deliveries sin recarga: convertibles a saldo a favor */}
+                {resumenSaldos.deliveriesSueltos > 0 && (
+                  <div className="px-3 py-1 border-t border-gray-200 dark:border-[#2d3148]">
+                    <div className="flex items-center justify-between gap-2 py-[3px]">
+                      <span className="font-inter text-[11px] text-gray-600 dark:text-gray-400 truncate">
+                        Deliveries sin usar
+                      </span>
+                      <span className="font-grotesk font-bold text-sm text-primary dark:text-[#5bb3e8] tabular-nums flex-shrink-0">
+                        {resumenSaldos.deliveriesSueltos}
+                      </span>
+                    </div>
+                    {resumenSaldos.valorDeliveriesSueltos > 0 && (
+                      <button
+                        onClick={onConvertirDeliveries}
+                        className="mt-1 mb-1 w-full text-center text-[10px] font-bold font-manrope py-1.5 rounded-lg
+                          bg-blue-50 dark:bg-[#1e2235] text-primary dark:text-[#5bb3e8] hover:bg-blue-100 dark:hover:bg-[#2d3148] transition-colors"
+                      >
+                        Pasar ${resumenSaldos.valorDeliveriesSueltos.toFixed(2)} a saldo a favor
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Deuda pendiente */}
+                {deudaCliente > 0 && (
+                  <div className="px-3 py-1 border-t border-gray-200 dark:border-[#2d3148]">
+                    <div className="flex items-center justify-between gap-2 py-[3px]">
+                      <span className="font-inter text-[11px] text-gray-600 dark:text-gray-400 truncate">
+                        Por pagar
+                      </span>
+                      <span className="font-grotesk font-bold text-sm text-red-600 dark:text-red-400 tabular-nums flex-shrink-0">
+                        ${deudaCliente.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Saldo a favor en dinero */}
+                {saldoDisponible > 0 && (
+                  <div className="px-3 py-1 pb-2 border-t border-gray-200 dark:border-[#2d3148]">
+                    <div className="flex items-center justify-between gap-2 py-[3px]">
+                      <span className="font-inter text-[11px] text-gray-600 dark:text-gray-400 truncate">
+                        Saldo a favor
+                      </span>
+                      <span className="font-grotesk font-bold text-sm text-green-700 dark:text-green-400 tabular-nums flex-shrink-0">
+                        ${saldoDisponible.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
