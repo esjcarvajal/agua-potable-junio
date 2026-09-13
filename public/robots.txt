@@ -1,0 +1,15 @@
+# aguapotablelacampina.com
+#
+# Solo la Home es indexable. /app y /nomina llevan cabecera
+# X-Robots-Tag: noindex desde el .htaccess.
+#
+# IMPORTANTE: /app y /nomina NO se bloquean aquí a propósito.
+# Un Disallow impediría el rastreo, y sin rastreo el buscador nunca
+# llega a leer la cabecera noindex — la URL puede seguir apareciendo
+# en resultados como enlace desnudo. Para desindexar hay que dejar
+# entrar al bot y que lea el noindex.
+
+User-agent: *
+Allow: /
+
+Sitemap: https://aguapotablelacampina.com/sitemap.xml

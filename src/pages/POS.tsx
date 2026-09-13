@@ -1153,7 +1153,9 @@ export default function POS() {
     const precintosUsados = (isDelivery ? precintosRecarga : 0) + precintosDesinfeccion
     const etiquetasUsadas = isDelivery ? precintosRecarga : 0
     if (tapasUsadas > 0 || precintosUsados > 0 || etiquetasUsadas > 0) {
-      store.descontarInsumos(tapasUsadas, precintosUsados, etiquetasUsadas)
+      // Se pasa el numero de orden para poder rastrear cada movimiento
+      // hasta la venta que lo origino.
+      store.descontarInsumos(tapasUsadas, precintosUsados, etiquetasUsadas, `Orden ${nuevoOrden}`, sesion?.nombre || '')
     }
 
     // 8.5 Descontar productos del inventario
@@ -1176,7 +1178,7 @@ export default function POS() {
       }
     }
     if (Object.keys(productosADescontar).length > 0) {
-      store.descontarProductos(productosADescontar)
+      store.descontarProductos(productosADescontar, `Orden ${nuevoOrden}`, sesion?.nombre || '')
     }
 
     // 9. Actualizar prepagos usados
@@ -2299,7 +2301,12 @@ function OrderPanel({
               </button>
             </div>
             {/* Badges debajo del chip */}
-            {(clientePrepagosDetalle.length > 0 || (clienteSeleccionado.saldo_usd && parseFloat(clienteSeleccionado.saldo_usd) > 0)) && (
+            {/* Se incluye la deuda en la condicion. Antes el bloque solo
+                aparecia si habia prepago o saldo a favor, asi que un cliente
+                que unicamente debia dinero no mostraba ningun aviso. */}
+            {(clientePrepagosDetalle.length > 0
+              || (clienteSeleccionado.saldo_usd && parseFloat(clienteSeleccionado.saldo_usd) > 0)
+              || deudaCliente > 0) && (
               <div className="flex flex-wrap gap-1.5 mt-2 px-1">
                 {clientePrepagosDetalle.map(d => (
                   <span key={d.tipo} className="text-[10px] font-bold font-grotesk px-2 py-0.5 rounded-full text-white"

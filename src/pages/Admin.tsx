@@ -3,7 +3,7 @@ import { useAppStore } from '../store/useAppStore'
 
 import {
   Settings, Database, Download, Upload, AlertTriangle, RefreshCw, FileText,
-  Save, TrendingUp, Loader2, Home, Truck, Plus, Trash2
+  Save, TrendingUp, Loader2, Home, Truck, Plus, Trash2, Briefcase, ExternalLink
 } from 'lucide-react'
 import GestionUsuarios from '../components/GestionUsuarios'
 import { getConfig, saveConfig, type Proveedor } from '../lib/useConfig'
@@ -296,6 +296,50 @@ export default function Admin() {
           </div>
         </div>
       )}
+
+      {/* ═══════════════════════════════════════════════════════════════
+         ACCESO AL SISTEMA DE NÓMINA
+         Aplicación Laravel independiente en /nomina. Esta página ya está
+         protegida por el permiso `verAdmin`, así que el enlace solo lo ve
+         un administrador. El control de acceso real, sin embargo, lo hace
+         el middleware `auth` de Laravel: la nómina pide su propio usuario
+         y contraseña aunque se llegue escribiendo la URL directamente.
+         ═══════════════════════════════════════════════════════════════ */}
+      <a
+        href="/nomina/dashboard"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="group block bg-white dark:bg-[#1e2235] rounded-[12px] p-5 mb-6 shadow-sm
+                   hover:shadow-md transition-shadow cursor-pointer"
+      >
+        <div className="flex items-center gap-4">
+          <div
+            className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background: 'linear-gradient(135deg, #005e97, #0077be)' }}
+          >
+            <Briefcase size={22} className="text-white" />
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 className="font-manrope font-bold text-base text-[#191c1e] dark:text-[#e4e6f0]">
+                Sistema de Nómina
+              </h3>
+              <ExternalLink
+                size={14}
+                className="text-gray-400 dark:text-gray-500 group-hover:text-primary dark:group-hover:text-[#5bb3e8] transition-colors"
+              />
+            </div>
+            <p className="font-inter text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              Empleados, nóminas, utilidades y constancias — requiere iniciar sesión aparte
+            </p>
+          </div>
+
+          <span className="hidden sm:block font-grotesk text-xs font-bold text-primary dark:text-[#5bb3e8] flex-shrink-0">
+            Abrir →
+          </span>
+        </div>
+      </a>
 
       {/* ═══════════════════════════════════════════════════════════════
          GESTIÓN DE PRECIOS

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { insertRow, updateRow, subscribeToNode, deleteNode } from '../lib/db'
+import { insertRow, updateRow, subscribeToNode, deleteNode, ajustarInventario, registrarMovimiento } from '../lib/db'
+import { getLocalDateString } from '../lib/dateUtils'
 
 export interface DeudaPostpago {
     id: string
@@ -104,7 +105,7 @@ interface AppState {
     tapas: number
     precintos: number
     etiquetas: number
-    descontarInsumos: (tapasUsadas: number, precintosUsados: number, etiquetasUsadas: number) => void
+    descontarInsumos: (tapasUsadas: number, precintosUsados: number, etiquetasUsadas: number, referencia?: string, usuario?: string) => void
 
     // PRODUCTOS DE INVENTARIO
     botellonNuevo19L: number
@@ -116,7 +117,7 @@ interface AppState {
     dispensadorAgua: number
     agarraderosManuales: number
     cepillosLavado: number
-    descontarProductos: (productos: Partial<Record<'botellonNuevo19L' | 'botellonNuevo12L' | 'botellonNuevo5L' | 'tapasReusables' | 'hielo' | 'helado' | 'dispensadorAgua' | 'agarraderosManuales' | 'cepillosLavado', number>>) => void
+    descontarProductos: (productos: Partial<Record<'botellonNuevo19L' | 'botellonNuevo12L' | 'botellonNuevo5L' | 'tapasReusables' | 'hielo' | 'helado' | 'dispensadorAgua' | 'agarraderosManuales' | 'cepillosLavado', number>>, referencia?: string, usuario?: string) => void
 
     // ENTREGAS
     marcarDeliveryCompletado: (ventaId: string) => Promise<void>
@@ -124,6 +125,23 @@ interface AppState {
     // INVENTARIO SYNC
     ultimoSyncInventario: string | null
     pushInventario: () => Promise<void>
+    /** false hasta que llega el inventario real de la nube. Evita operar
+     *  sobre ceros mientras carga. */
+    inventarioCargado: boolean
+    /** Entrega a credito desde la ficha del cliente. Crea una venta real
+     *  por debajo: misma factura, mismo descuento de inventario. */
+    registrarEntregaCredito: (params: {
+        clienteId: string
+        clienteNombre: string
+        items: { producto: any; cantidad: number }[]
+        ciclo: 7 | 15 | 30
+        usuario?: string
+        nota?: string
+        /** Fecha real de la entrega (YYYY-MM-DD). Por defecto, hoy.
+         *  Permite registrar entregas de dias pasados que quedaron sin
+         *  anotar, con su fecha verdadera en el estado de cuenta. */
+        fecha?: string
+    }) => Promise<{ ok: boolean; numeroOrden?: string; error?: string }>
 
     // SYNC (Realtime)
     initFirebaseSubscriptions: () => void
@@ -482,14 +500,26 @@ export const useAppStore = create<AppState>()(
             tapas: 0,
             precintos: 0,
             etiquetas: 0,
-            descontarInsumos: (tapasUsadas, precintosUsados, etiquetasUsadas) => {
+            descontarInsumos: (tapasUsadas, precintosUsados, etiquetasUsadas, referencia = '', usuario = '') => {
+                // Se actualiza la pantalla al instante para que el vendedor
+                // vea el efecto, pero lo que manda es el ajuste atomico del
+                // servidor: la suscripcion traera el valor real enseguida.
                 set((s) => ({
                     tapas: Math.max(0, s.tapas - tapasUsadas),
                     precintos: Math.max(0, s.precintos - precintosUsados),
                     etiquetas: Math.max(0, s.etiquetas - etiquetasUsadas)
                 }))
-                // Publicar snapshot al cloud
-                setTimeout(() => get().pushInventario(), 500)
+
+                const deltas: Record<string, number> = {}
+                if (tapasUsadas > 0) deltas.tapas = -tapasUsadas
+                if (precintosUsados > 0) deltas.precintos = -precintosUsados
+                if (etiquetasUsadas > 0) deltas.etiquetas = -etiquetasUsadas
+                if (Object.keys(deltas).length === 0) return
+
+                ajustarInventario(deltas)
+                for (const [campo, delta] of Object.entries(deltas)) {
+                    registrarMovimiento({ campo, delta, motivo: 'venta', referencia, usuario })
+                }
             },
 
             // PRODUCTOS DE INVENTARIO
@@ -502,7 +532,20 @@ export const useAppStore = create<AppState>()(
             dispensadorAgua: 0,
             agarraderosManuales: 0,
             cepillosLavado: 0,
-            descontarProductos: (productos) => {
+            descontarProductos: (productos, referencia = '', usuario = '') => {
+                // Nombre en el store (camelCase) -> nombre en Firebase (snake_case)
+                const A_FIREBASE: Record<string, string> = {
+                    botellonNuevo19L: 'botellon_nuevo_19l',
+                    botellonNuevo12L: 'botellon_nuevo_12l',
+                    botellonNuevo5L: 'botellon_nuevo_5l',
+                    tapasReusables: 'tapas_reusables',
+                    hielo: 'hielo',
+                    helado: 'helado',
+                    dispensadorAgua: 'dispensador_agua',
+                    agarraderosManuales: 'agarraderos_manuales',
+                    cepillosLavado: 'cepillos_lavado',
+                }
+
                 set((s) => {
                     const updates: any = {}
                     for (const [key, qty] of Object.entries(productos)) {
@@ -512,7 +555,18 @@ export const useAppStore = create<AppState>()(
                     }
                     return updates
                 })
-                setTimeout(() => get().pushInventario(), 500)
+
+                const deltas: Record<string, number> = {}
+                for (const [key, qty] of Object.entries(productos)) {
+                    const campo = A_FIREBASE[key]
+                    if (campo && qty && qty > 0) deltas[campo] = -qty
+                }
+                if (Object.keys(deltas).length === 0) return
+
+                ajustarInventario(deltas)
+                for (const [campo, delta] of Object.entries(deltas)) {
+                    registrarMovimiento({ campo, delta, motivo: 'venta', referencia, usuario })
+                }
             },
 
             marcarDeliveryCompletado: async (ventaId) => {
@@ -528,28 +582,137 @@ export const useAppStore = create<AppState>()(
             },
 
             ultimoSyncInventario: null,
+            inventarioCargado: false,
 
+            // Entrega a credito desde la ficha del cliente.
+            //
+            // Antes, asignar credito era escribir una cifra a mano en la ficha.
+            // Eso no creaba venta, no descontaba inventario y no entraba en los
+            // reportes: los botellones salian del deposito sin dejar rastro.
+            //
+            // Esta funcion hace lo mismo que el Punto de Venta, con la misma
+            // numeracion y las mismas reglas de insumos. Solo cambia la
+            // pantalla: en vez de todo el POS, un cuadro corto.
+            registrarEntregaCredito: async ({ clienteId, clienteNombre, items, ciclo, usuario = '', nota = '', fecha }) => {
+                const s = get()
+                if (!items.length) return { ok: false, error: 'No hay productos que entregar' }
+                if (!s.inventarioCargado) {
+                    return { ok: false, error: 'El inventario aun se esta cargando. Espere unos segundos.' }
+                }
+
+                const totalUsd = items.reduce((t, i) => t + (Number(i.producto.precio) || 0) * i.cantidad, 0)
+
+                // Misma numeracion correlativa que el POS, referida al dia de
+                // la entrega: si se registra una entrega de la semana pasada,
+                // su numero sigue al de aquel dia, no al de hoy.
+                const hoy = fecha || getLocalDateString()
+                const ventasDelDia = s.ventas.filter((v: any) => v.fecha === hoy)
+                const numeroOrden = String(ventasDelDia.length + 1).padStart(3, '0')
+
+                const ventaId = crypto.randomUUID()
+                const venta = {
+                    id: ventaId,
+                    numero_orden: numeroOrden,
+                    fecha: hoy,
+                    hora: new Date().toLocaleTimeString(),
+                    cliente_id: clienteId,
+                    cliente_nombre: clienteNombre,
+                    items_json: JSON.stringify(items),
+                    total_usd: parseFloat(totalUsd.toFixed(2)),
+                    valor_cortesia_usd: 0,
+                    total_ves: 0,
+                    saldo_aplicado_usd: 0,
+                    tasa_bcv: s.tasaBcv.valor,
+                    metodo_pago: 'post_pago',
+                    es_delivery: true,        // una entrega a empresa es delivery
+                    estado_delivery: 'completado',
+                    estado: 'completado',
+                    vendedor: usuario,
+                    nota,
+                }
+
+                set((st: any) => ({ ventas: [venta, ...st.ventas] }))
+                await insertRow('ventas', venta)
+
+                // ── Litros: mismas reglas que el POS ──
+                const totalLitros = items.reduce((t, i) => {
+                    const p = i.producto
+                    return t + ((p.esRecarga || p.esDesinfeccion) ? (Number(p.litros) || 0) * i.cantidad : 0)
+                }, 0)
+                if (totalLitros > 0) get().descontarLitros(totalLitros)
+
+                // ── Insumos: copia exacta de las reglas del POS ──
+                const esTapable = (p: any) =>
+                    (p.esRecarga || p.esDesinfeccion) && (p.litros === 19 || p.litros === 12)
+                const tapasUsadas = items.filter(i => esTapable(i.producto))
+                    .reduce((n, i) => n + i.cantidad, 0)
+                const precintosRecarga = items
+                    .filter(i => i.producto.esRecarga && (i.producto.litros === 19 || i.producto.litros === 12))
+                    .reduce((n, i) => n + i.cantidad, 0)
+                const precintosDesinfeccion = items
+                    .filter(i => i.producto.esDesinfeccion && (i.producto.litros === 19 || i.producto.litros === 12))
+                    .reduce((n, i) => n + i.cantidad, 0)
+                // es_delivery = true, asi que los precintos y etiquetas de
+                // recarga se consumen, igual que en el POS con delivery.
+                const precintosUsados = precintosRecarga + precintosDesinfeccion
+                const etiquetasUsadas = precintosRecarga
+                if (tapasUsadas > 0 || precintosUsados > 0 || etiquetasUsadas > 0) {
+                    get().descontarInsumos(tapasUsadas, precintosUsados, etiquetasUsadas, `Orden ${numeroOrden}`, usuario)
+                }
+
+                // ── Productos de inventario ──
+                const PROD_TO_STORE_KEY: Record<string, string> = {
+                    p5: 'botellonNuevo19L', p8: 'botellonNuevo12L', p9: 'botellonNuevo5L',
+                    p10: 'tapasReusables', p6: 'hielo', p7: 'helado',
+                    p11: 'dispensadorAgua', p12: 'agarraderosManuales', p13: 'cepillosLavado',
+                }
+                const productosADescontar: Record<string, number> = {}
+                for (const i of items) {
+                    const k = PROD_TO_STORE_KEY[i.producto.id]
+                    if (k) productosADescontar[k] = (productosADescontar[k] || 0) + i.cantidad
+                }
+                if (Object.keys(productosADescontar).length > 0) {
+                    get().descontarProductos(productosADescontar as any, `Orden ${numeroOrden}`, usuario)
+                }
+
+                // ── La deuda, atada a esta venta ──
+                // El plazo cuenta desde la entrega, no desde el registro.
+                const vence = new Date(hoy + 'T00:00:00')
+                vence.setDate(vence.getDate() + ciclo)
+                get().agregarDeuda({
+                    id: crypto.randomUUID(),
+                    clienteId,
+                    ventaId,
+                    montoUsd: parseFloat(totalUsd.toFixed(2)),
+                    montoPagadoUsd: 0,
+                    fechaVenta: hoy,
+                    fechaVencimiento: vence.toISOString().split('T')[0],
+                    ciclo,
+                    estado: 'pendiente',
+                } as any)
+
+                return { ok: true, numeroOrden }
+            },
+
+
+            // Solo publica los LITROS.
+            //
+            // Antes subia la foto completa del inventario --tapas, precintos,
+            // productos, todo-- cada vez que cambiaba cualquier cosa. Con dos
+            // equipos abiertos, el ultimo en escribir pisaba los cambios del
+            // otro en todos los campos a la vez. Ahi se perdian las compras.
+            //
+            // Los conteos por unidades ahora van por ajustarInventario(), que
+            // suma y resta en el servidor campo por campo. Los litros siguen
+            // por aqui porque son una estructura (los 11 tanques mas el
+            // reservorio) que se recalcula entera, no un contador simple.
             pushInventario: async () => {
                 const s = get()
-                const snapshot = {
-                    id: 'INVENTARIO_SNAPSHOT',
+                await updateRow('inventario_snapshot', 'INVENTARIO_SNAPSHOT', {
                     litros_jumbo: s.litrosJumbo,
                     litros_tanques_json: JSON.stringify(s.litrosTanques),
-                    tapas: s.tapas,
-                    precintos: s.precintos,
-                    etiquetas: s.etiquetas,
-                    botellon_nuevo_19l: s.botellonNuevo19L,
-                    botellon_nuevo_12l: s.botellonNuevo12L,
-                    botellon_nuevo_5l: s.botellonNuevo5L,
-                    tapas_reusables: s.tapasReusables,
-                    hielo: s.hielo,
-                    helado: s.helado,
-                    dispensador_agua: s.dispensadorAgua,
-                    agarraderos_manuales: s.agarraderosManuales,
-                    cepillos_lavado: s.cepillosLavado,
                     actualizado_en: new Date().toISOString(),
-                }
-                await updateRow('inventario_snapshot', 'INVENTARIO_SNAPSHOT', snapshot)
+                })
             },
 
             initFirebaseSubscriptions: () => {
@@ -598,23 +761,35 @@ export const useAppStore = create<AppState>()(
                         if (parsed.length > 0) tanquesSnap = parsed
                     } catch { /* keep defaults */ }
                     
+                    // Un valor de la nube solo se descarta si viene ausente o
+                    // ilegible. Antes se usaba `parseInt(x) || local`, y como
+                    // en JavaScript `0 || otro` devuelve `otro`, un cero real
+                    // se descartaba y reaparecia el numero viejo del navegador.
+                    // Por eso, cuando el dueno ponia algo en cero, al dia
+                    // siguiente el numero volvia.
+                    const num = (valor: any, actual: number): number => {
+                        const n = parseInt(valor)
+                        return Number.isFinite(n) ? n : actual
+                    }
+
                     const s = get()
                     set({
                         litrosJumbo: jumboSnap,
                         litrosTanques: tanquesSnap,
-                        tapas: parseInt(row.tapas) || s.tapas,
-                        precintos: parseInt(row.precintos) || s.precintos,
-                        etiquetas: parseInt(row.etiquetas) || s.etiquetas,
-                        botellonNuevo19L: parseInt(row.botellon_nuevo_19l) || s.botellonNuevo19L,
-                        botellonNuevo12L: parseInt(row.botellon_nuevo_12l) || s.botellonNuevo12L,
-                        botellonNuevo5L: parseInt(row.botellon_nuevo_5l) || s.botellonNuevo5L,
-                        tapasReusables: parseInt(row.tapas_reusables) || s.tapasReusables,
-                        hielo: parseInt(row.hielo) || s.hielo,
-                        helado: parseInt(row.helado) || s.helado,
-                        dispensadorAgua: parseInt(row.dispensador_agua) || s.dispensadorAgua,
-                        agarraderosManuales: parseInt(row.agarraderos_manuales) || s.agarraderosManuales,
-                        cepillosLavado: parseInt(row.cepillos_lavado) || s.cepillosLavado,
+                        tapas: num(row.tapas, s.tapas),
+                        precintos: num(row.precintos, s.precintos),
+                        etiquetas: num(row.etiquetas, s.etiquetas),
+                        botellonNuevo19L: num(row.botellon_nuevo_19l, s.botellonNuevo19L),
+                        botellonNuevo12L: num(row.botellon_nuevo_12l, s.botellonNuevo12L),
+                        botellonNuevo5L: num(row.botellon_nuevo_5l, s.botellonNuevo5L),
+                        tapasReusables: num(row.tapas_reusables, s.tapasReusables),
+                        hielo: num(row.hielo, s.hielo),
+                        helado: num(row.helado, s.helado),
+                        dispensadorAgua: num(row.dispensador_agua, s.dispensadorAgua),
+                        agarraderosManuales: num(row.agarraderos_manuales, s.agarraderosManuales),
+                        cepillosLavado: num(row.cepillos_lavado, s.cepillosLavado),
                         ultimoSyncInventario: row.actualizado_en || new Date().toISOString(),
+                        inventarioCargado: true,
                         isSyncing: false
                     })
                 })
@@ -669,6 +844,29 @@ export const useAppStore = create<AppState>()(
                 })
             }
         }),
-        { name: 'agua-potable-store' }
+        {
+            name: 'agua-potable-store',
+            // El inventario NO se guarda en el navegador.
+            //
+            // Antes se guardaba entero, asi que cada equipo tenia su propia
+            // copia. Al abrir la aplicacion se mostraba esa copia vieja, y
+            // cualquier venta hecha en esos primeros segundos calculaba sobre
+            // numeros equivocados y los subia a la nube.
+            //
+            // Ahora la unica verdad esta en Firebase. Mientras llega, la
+            // pantalla avisa con `inventarioCargado`.
+            partialize: (state) => {
+                const {
+                    tapas, precintos, etiquetas,
+                    botellonNuevo19L, botellonNuevo12L, botellonNuevo5L,
+                    tapasReusables, hielo, helado, dispensadorAgua,
+                    agarraderosManuales, cepillosLavado,
+                    litrosJumbo, litrosTanques,
+                    inventarioCargado, isSyncing,
+                    ...resto
+                } = state
+                return resto as AppState
+            },
+        }
     )
 )

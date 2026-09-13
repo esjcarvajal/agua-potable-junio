@@ -1,7 +1,10 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { useLocation } from 'react-router-dom'
-import { Search, Plus, X, Phone, MapPin, User, Edit2, ChevronRight } from 'lucide-react'
+import { Search, Plus, X, Phone, MapPin, User, Edit2, ChevronRight, PackagePlus, FileText, Printer, Mail, MessageCircle, Minus } from 'lucide-react'
+import { CATALOGO_PRODUCTOS, PRODUCTOS_ENTREGA_CREDITO } from '../lib/catalogoProductos'
+import { useProductos } from '../lib/useProductos'
+import { useAuthStore } from '../store/useAuthStore'
 import { getLocalDateString } from '../lib/dateUtils'
 
 /* ════════════════════════════════════════════════════════════════════
@@ -39,6 +42,50 @@ export default function Clientes() {
   const [showNuevoModal, setShowNuevoModal] = useState(false)
   const [showDetalleModal, setShowDetalleModal] = useState(false)
   const [clienteDetalle, setClienteDetalle] = useState<any>(null)
+
+  // ── Entrega a crédito ──────────────────────────────────────────
+  // Reemplaza el metodo anterior de escribir una cifra a mano. Crea una
+  // venta real por debajo: factura, descuento de inventario y deuda.
+  const [showEntrega, setShowEntrega] = useState(false)
+  const [entregaCantidades, setEntregaCantidades] = useState<Record<string, number>>({})
+  const [entregaCiclo, setEntregaCiclo] = useState<7 | 15 | 30>(30)
+  const [guardandoEntrega, setGuardandoEntrega] = useState(false)
+  // Fecha real de la entrega. Sirve para poner al dia entregas de dias
+  // pasados que se habian anotado a mano y nunca se registraron.
+  const [entregaFecha, setEntregaFecha] = useState(getLocalDateString())
+  // Precio por unidad de esta entrega concreta. El precio de lista es solo
+  // el punto de partida: a las empresas se les factura delivery, y ese
+  // precio cambia con el tiempo. Sin esto los montos saldrian mal.
+  const [entregaPrecios, setEntregaPrecios] = useState<Record<string, string>>({})
+  // Empresa o sucursal que recibe el despacho. Un mismo pagador (Hasibi)
+  // puede tener varias empresas (JACIDI, Navicu...): cada una recibe por
+  // separado pero la factura la paga una sola. El desglose se agrupa por
+  // este campo para poder mostrarle el detalle de cada una.
+  const [entregaNota, setEntregaNota] = useState('')
+  const [showEstadoCuenta, setShowEstadoCuenta] = useState(false)
+
+  const preciosConfig = useProductos()
+  const sesionActual = useAuthStore(st => st.sesion)
+
+  // Ficha tecnica + precio configurado, para los productos que tiene
+  // sentido entregar a una empresa.
+  const productosEntrega = useMemo(() => {
+    return PRODUCTOS_ENTREGA_CREDITO
+      .map(id => {
+        const ficha = CATALOGO_PRODUCTOS.find(f => f.id === id)
+        const cfg = preciosConfig.find(c => c.id === id)
+        if (!ficha) return null
+        return {
+          id: ficha.id,
+          nombre: cfg?.nombre || ficha.nombre,
+          precio: cfg?.precioUsd ?? 0,
+          litros: ficha.litros,
+          esRecarga: ficha.esRecarga,
+          esDesinfeccion: ficha.esDesinfeccion,
+        }
+      })
+      .filter(Boolean) as any[]
+  }, [preciosConfig])
   const [editMode, setEditMode] = useState(false)
 
   // Form state
@@ -137,6 +184,163 @@ export default function Clientes() {
     resetForm()
     setShowNuevoModal(false)
   }
+
+
+  // ── Entrega a crédito ────────────────────────────────────────────
+  /** Precio que se aplica: el escrito a mano, o el de lista si no se tocó. */
+  const precioDe = useCallback((prod: any) => {
+    const escrito = entregaPrecios[prod.id]
+    if (escrito === undefined || escrito.trim() === '') return prod.precio
+    const n = parseFloat(escrito.replace(',', '.'))
+    return Number.isFinite(n) && n >= 0 ? n : prod.precio
+  }, [entregaPrecios])
+
+  const totalEntrega = useMemo(() =>
+    productosEntrega.reduce((t, p) => t + precioDe(p) * (entregaCantidades[p.id] || 0), 0),
+    [productosEntrega, entregaCantidades, precioDe])
+
+  const cambiarCantidad = (id: string, delta: number) => {
+    setEntregaCantidades(prev => {
+      const n = Math.max(0, (prev[id] || 0) + delta)
+      const copia = { ...prev }
+      if (n === 0) delete copia[id]
+      else copia[id] = n
+      return copia
+    })
+  }
+
+  const confirmarEntrega = async () => {
+    if (!clienteDetalle) return
+    const items = productosEntrega
+      .filter(p => (entregaCantidades[p.id] || 0) > 0)
+      .map(p => ({
+        // Se guarda el precio realmente cobrado, no el de lista: es lo que
+        // sale luego en el desglose que se le manda al cliente.
+        producto: { ...p, precio: precioDe(p) },
+        cantidad: entregaCantidades[p.id],
+      }))
+
+    if (items.length === 0) {
+      showToast('Agregue al menos un producto', 'warning')
+      return
+    }
+
+    setGuardandoEntrega(true)
+    const res = await store.registrarEntregaCredito({
+      clienteId: clienteDetalle.id,
+      clienteNombre: clienteDetalle.nombre,
+      items,
+      ciclo: entregaCiclo,
+      usuario: sesionActual?.nombre || '',
+      fecha: entregaFecha,
+      nota: entregaNota.trim(),
+    })
+    setGuardandoEntrega(false)
+
+    if (!res.ok) {
+      showToast(res.error || 'No se pudo registrar la entrega', 'error')
+      return
+    }
+    showToast(`Entrega registrada — Orden ${res.numeroOrden}`, 'success')
+    setEntregaCantidades({})
+    setEntregaPrecios({})
+    setEntregaNota('')
+    setEntregaFecha(getLocalDateString())
+    setShowEntrega(false)
+  }
+
+  // ── Estado de cuenta ─────────────────────────────────────────────
+  // Une cada deuda con los productos de su venta. El detalle siempre
+  // estuvo guardado en items_json; simplemente no se mostraba.
+  const detalleCuenta = useMemo(() => {
+    if (!clienteDetalle) return []
+    return store.getDeudasCliente(clienteDetalle.id)
+      .filter(d => d.estado !== 'pagada')
+      .map(d => {
+        const venta: any = ventas.find((v: any) => v.id === d.ventaId)
+        let items: any[] = []
+        try { items = JSON.parse(venta?.items_json || '[]') } catch { items = [] }
+        const pagado = Number((d as any).montoPagadoUsd) || 0
+        return {
+          ...d,
+          orden: venta?.numero_orden || '—',
+          empresa: (venta?.nota || '').trim(),
+          fecha: venta?.fecha || d.fechaVenta,
+          items,
+          pagado,
+          pendiente: Math.max(0, d.montoUsd - pagado),
+        }
+      })
+      .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)))
+  }, [clienteDetalle, ventas, store])
+
+  const totalPendiente = useMemo(
+    () => detalleCuenta.reduce((t, d) => t + d.pendiente, 0), [detalleCuenta])
+
+  /** Agrupa por empresa receptora. Si ninguna entrega la trae, devuelve un
+   *  solo grupo sin título y el desglose se ve como una lista corrida. */
+  const gruposCuenta = useMemo(() => {
+    const hayEmpresas = detalleCuenta.some(d => d.empresa)
+    if (!hayEmpresas) return [{ empresa: '', deudas: detalleCuenta, total: totalPendiente }]
+    const mapa = new Map<string, any[]>()
+    for (const d of detalleCuenta) {
+      const k = d.empresa || 'Sin especificar'
+      if (!mapa.has(k)) mapa.set(k, [])
+      mapa.get(k)!.push(d)
+    }
+    return Array.from(mapa.entries()).map(([empresa, deudas]) => ({
+      empresa,
+      deudas,
+      total: deudas.reduce((t, d) => t + d.pendiente, 0),
+    }))
+  }, [detalleCuenta, totalPendiente])
+
+  /** Texto plano del desglose, para WhatsApp y correo. */
+  const textoEstadoCuenta = useCallback(() => {
+    if (!clienteDetalle) return ''
+    const L: string[] = []
+    L.push(`*ESTADO DE CUENTA*`)
+    L.push(`Agua Potable La Campiña C.A.`)
+    L.push(`Cliente: ${clienteDetalle.nombre}`)
+    L.push(`Fecha: ${new Date().toLocaleDateString('es-VE')}`)
+    L.push('')
+    for (const g of gruposCuenta) {
+      if (g.empresa) {
+        L.push(`──────────────`)
+        L.push(`*${g.empresa.toUpperCase()}*`)
+      }
+      for (const d of g.deudas) {
+        const f = new Date(d.fecha + 'T00:00:00').toLocaleDateString('es-VE')
+        L.push(`${f} — Orden ${d.orden}`)
+        for (const it of d.items) {
+          L.push(`   ${it.cantidad} x ${it.producto?.nombre || '?'} .... $${((it.producto?.precio || 0) * it.cantidad).toFixed(2)}`)
+        }
+        if (d.pagado > 0) L.push(`   Abonado: -$${d.pagado.toFixed(2)}`)
+        L.push(`   Subtotal: $${d.pendiente.toFixed(2)}`)
+        L.push('')
+      }
+      if (g.empresa) {
+        L.push(`Subtotal ${g.empresa}: $${g.total.toFixed(2)}`)
+        L.push('')
+      }
+    }
+    L.push(`*TOTAL PENDIENTE: $${totalPendiente.toFixed(2)}*`)
+    return L.join('\n')
+  }, [clienteDetalle, gruposCuenta, totalPendiente])
+
+  const enviarPorWhatsApp = () => {
+    const tel = String(clienteDetalle?.telefono || '').replace(/\D/g, '')
+    const texto = encodeURIComponent(textoEstadoCuenta())
+    // Sin telefono, WhatsApp abre el selector de contactos.
+    window.open(tel ? `https://wa.me/${tel}?text=${texto}` : `https://wa.me/?text=${texto}`, '_blank')
+  }
+
+  const enviarPorCorreo = () => {
+    const asunto = encodeURIComponent(`Estado de cuenta — ${clienteDetalle?.nombre || ''}`)
+    const cuerpo = encodeURIComponent(textoEstadoCuenta().replace(/\*/g, ''))
+    window.location.href = `mailto:${clienteDetalle?.email || ''}?subject=${asunto}&body=${cuerpo}`
+  }
+
 
   const handleEditar = async () => {
     console.log('[handleEditar] Iniciando', { clienteDetalle, formNombre, formEsPostpago, formCiclo, formLimite })
@@ -718,6 +922,28 @@ export default function Clientes() {
                         </div>
                       )}
                       
+                      {/* Entregar a crédito: sustituye el metodo de escribir
+                          una cifra a mano, que no creaba venta ni descontaba
+                          inventario. */}
+                      <div className="flex gap-2 mb-4">
+                        <button
+                          onClick={() => { setEntregaCantidades({}); setShowEntrega(true) }}
+                          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl
+                            font-manrope font-bold text-sm text-white shadow-sm transition-opacity hover:opacity-90"
+                          style={{ background: 'linear-gradient(135deg, #005e97, #0077be)' }}
+                        >
+                          <PackagePlus size={16} /> Entregar a crédito
+                        </button>
+                        <button
+                          onClick={() => setShowEstadoCuenta(true)}
+                          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl
+                            font-manrope font-bold text-sm text-primary dark:text-[#5bb3e8]
+                            bg-blue-50 dark:bg-[#1a1d27] hover:bg-blue-100 dark:hover:bg-[#232735] transition-colors"
+                        >
+                          <FileText size={16} /> Desglose
+                        </button>
+                      </div>
+
                       <div className="space-y-3">
                         {store.getDeudasCliente(clienteDetalle.id).length === 0 ? (
                           <p className="text-sm text-gray-400 font-inter py-4 text-center">No hay cuentas por cobrar registradas</p>
@@ -729,7 +955,12 @@ export default function Clientes() {
                                 <div className="flex items-start justify-between">
                                   <div>
                                     <div className="flex items-center gap-2 mb-1">
-                                      <span className="font-inter font-bold text-sm text-onSurface dark:text-[#e4e6f0]">Factura: {d.ventaId.split('-')[0]}</span>
+                                      <span className="font-inter font-bold text-sm text-onSurface dark:text-[#e4e6f0]">
+                                        {(() => {
+                                          const v: any = ventas.find((x: any) => x.id === d.ventaId)
+                                          return v?.numero_orden ? `Orden ${v.numero_orden}` : `Factura: ${d.ventaId.split('-')[0]}`
+                                        })()}
+                                      </span>
                                       <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${d.estado === 'pagada' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : isVencida ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'}`}>
                                         {d.estado.toUpperCase()}
                                       </span>
@@ -790,6 +1021,254 @@ export default function Clientes() {
           </div>
         )
       })()}
+
+
+      {/* ═══ ENTREGAR A CRÉDITO ═══════════════════════════════════════ */}
+      {showEntrega && clienteDetalle && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowEntrega(false)} />
+          <div className="relative bg-white dark:bg-[#1e2235] rounded-2xl shadow-2xl w-full max-w-lg max-h-[88vh] flex flex-col">
+            <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-[#2d3148]">
+              <div>
+                <h3 className="font-manrope font-bold text-lg text-onSurface dark:text-[#e4e6f0]">Entregar a crédito</h3>
+                <p className="font-inter text-xs text-gray-500 dark:text-gray-400 mt-0.5">{clienteDetalle.nombre}</p>
+              </div>
+              <button onClick={() => setShowEntrega(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-5 space-y-1">
+              {productosEntrega.map(prod => {
+                const cant = entregaCantidades[prod.id] || 0
+                return (
+                  <div key={prod.id} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${
+                    cant > 0 ? 'bg-blue-50 dark:bg-[#1a1d27]' : ''}`}>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-inter text-sm text-onSurface dark:text-[#e4e6f0] truncate">{prod.nombre}</div>
+                      {cant > 0 ? (
+                        <div className="flex items-center gap-1 mt-0.5">
+                          <span className="font-inter text-xs text-gray-400">$</span>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={entregaPrecios[prod.id] ?? ''}
+                            placeholder={prod.precio.toFixed(2)}
+                            onChange={e => setEntregaPrecios(prev => ({ ...prev, [prod.id]: e.target.value }))}
+                            className="w-16 px-1.5 py-0.5 rounded border border-gray-200 dark:border-[#2d3148]
+                              bg-white dark:bg-[#1e2235] font-grotesk text-xs text-onSurface dark:text-[#e4e6f0]"
+                          />
+                          <span className="font-inter text-xs text-gray-400">c/u</span>
+                        </div>
+                      ) : (
+                        <div className="font-inter text-xs text-gray-500 dark:text-gray-400">${prod.precio.toFixed(2)} c/u</div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button onClick={() => cambiarCantidad(prod.id, -1)} disabled={cant === 0}
+                        className="w-8 h-8 rounded-lg flex items-center justify-center bg-gray-100 dark:bg-[#2d3148]
+                          text-gray-600 dark:text-gray-300 disabled:opacity-30">
+                        <Minus size={14} />
+                      </button>
+                      <span className="w-8 text-center font-grotesk font-bold text-sm text-onSurface dark:text-[#e4e6f0]">{cant}</span>
+                      <button onClick={() => cambiarCantidad(prod.id, 1)}
+                        className="w-8 h-8 rounded-lg flex items-center justify-center bg-primary text-white">
+                        <Plus size={14} />
+                      </button>
+                    </div>
+                    <div className="w-16 text-right font-grotesk font-bold text-sm text-onSurface dark:text-[#e4e6f0]">
+                      {cant > 0 ? `$${(precioDe(prod) * cant).toFixed(2)}` : ''}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="p-5 border-t border-gray-100 dark:border-[#2d3148] space-y-4">
+              <div>
+                <label className="block font-inter text-xs text-gray-500 dark:text-gray-400 mb-2">
+                  Fecha de la entrega
+                </label>
+                <input
+                  type="date"
+                  value={entregaFecha}
+                  max={getLocalDateString()}
+                  onChange={e => setEntregaFecha(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-[#1a1d27]
+                    border border-gray-200 dark:border-[#2d3148]
+                    font-inter text-sm text-onSurface dark:text-[#e4e6f0]"
+                />
+                {entregaFecha !== getLocalDateString() && (
+                  <p className="font-inter text-[11px] text-amber-600 dark:text-amber-500 mt-1">
+                    Registrando una entrega de una fecha anterior.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block font-inter text-xs text-gray-500 dark:text-gray-400 mb-2">Plazo de pago</label>
+                <div className="flex gap-2">
+                  {([7, 15, 30] as const).map(c => (
+                    <button key={c} onClick={() => setEntregaCiclo(c)}
+                      className={`flex-1 py-2 rounded-lg font-manrope font-bold text-sm transition-colors ${
+                        entregaCiclo === c
+                          ? 'bg-primary text-white'
+                          : 'bg-gray-100 dark:bg-[#2d3148] text-gray-600 dark:text-gray-300'}`}>
+                      {c} días
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="font-inter text-sm text-gray-500 dark:text-gray-400">Total a crédito</span>
+                <span className="font-grotesk font-bold text-2xl text-onSurface dark:text-[#e4e6f0]">
+                  ${totalEntrega.toFixed(2)}
+                </span>
+              </div>
+
+              <div>
+                <label className="block font-inter text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  Empresa o sucursal que recibe (opcional)
+                </label>
+                <input
+                  type="text"
+                  value={entregaNota}
+                  onChange={e => setEntregaNota(e.target.value)}
+                  placeholder="Ej: JACIDI, Navicu…"
+                  className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-[#1a1d27]
+                    border border-gray-200 dark:border-[#2d3148]
+                    font-inter text-sm text-onSurface dark:text-[#e4e6f0]"
+                />
+              </div>
+
+              <p className="font-inter text-[11px] text-gray-400 dark:text-gray-500">
+                Se descuenta del inventario al confirmar, igual que una venta normal.
+                El precio en blanco usa el de lista.
+              </p>
+
+              <button onClick={confirmarEntrega} disabled={guardandoEntrega || totalEntrega === 0}
+                className="w-full py-3 rounded-xl font-manrope font-bold text-white shadow-md
+                  disabled:opacity-40 transition-opacity"
+                style={{ background: 'linear-gradient(135deg, #005e97, #0077be)' }}>
+                {guardandoEntrega ? 'Registrando…' : 'Confirmar entrega'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ ESTADO DE CUENTA ═════════════════════════════════════════ */}
+      {showEstadoCuenta && clienteDetalle && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm print:hidden" onClick={() => setShowEstadoCuenta(false)} />
+          <div className="relative bg-white dark:bg-[#1e2235] rounded-2xl shadow-2xl w-full max-w-2xl max-h-[88vh] flex flex-col print:max-h-none print:shadow-none">
+            <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-[#2d3148] print:hidden">
+              <h3 className="font-manrope font-bold text-lg text-onSurface dark:text-[#e4e6f0]">Estado de cuenta</h3>
+              <div className="flex items-center gap-2">
+                <button onClick={() => window.print()} title="Imprimir"
+                  className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-[#2d3148]"><Printer size={18} /></button>
+                <button onClick={enviarPorWhatsApp} title="Enviar por WhatsApp"
+                  className="p-2 rounded-lg text-green-600 hover:bg-green-50 dark:hover:bg-[#2d3148]"><MessageCircle size={18} /></button>
+                <button onClick={enviarPorCorreo} title="Enviar por correo"
+                  className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-[#2d3148]"><Mail size={18} /></button>
+                <button onClick={() => setShowEstadoCuenta(false)}
+                  className="p-2 rounded-lg text-gray-400 hover:text-gray-600"><X size={20} /></button>
+              </div>
+            </div>
+
+            <div className="overflow-y-auto p-6 print:overflow-visible" id="estado-cuenta-imprimible">
+              <div className="mb-5">
+                <div className="font-manrope font-bold text-lg text-primary dark:text-[#5bb3e8]">
+                  Agua Potable La Campiña C.A.
+                </div>
+                <div className="font-inter text-sm text-onSurface dark:text-[#e4e6f0] mt-2">
+                  Cliente: <strong>{clienteDetalle.nombre}</strong>
+                </div>
+                <div className="font-inter text-xs text-gray-500 dark:text-gray-400">
+                  Emitido el {new Date().toLocaleDateString('es-VE')}
+                </div>
+              </div>
+
+              {detalleCuenta.length === 0 ? (
+                <p className="font-inter text-sm text-gray-500 dark:text-gray-400 text-center py-8">
+                  Este cliente no tiene cuentas pendientes.
+                </p>
+              ) : (
+                <>
+                  {gruposCuenta.map(g => (
+                  <div key={g.empresa || 'unico'}>
+                  {g.empresa && (
+                    <div className="flex items-center justify-between mb-2 mt-4 pb-1 border-b-2 border-primary/30">
+                      <span className="font-manrope font-bold text-sm text-primary dark:text-[#5bb3e8] uppercase">
+                        {g.empresa}
+                      </span>
+                      <span className="font-grotesk font-bold text-sm text-primary dark:text-[#5bb3e8]">
+                        ${g.total.toFixed(2)}
+                      </span>
+                    </div>
+                  )}
+                  {g.deudas.map(d => (
+                    <div key={d.id} className="mb-4 pb-4 border-b border-gray-100 dark:border-[#2d3148]">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-inter font-bold text-sm text-onSurface dark:text-[#e4e6f0]">
+                          {new Date(d.fecha + 'T00:00:00').toLocaleDateString('es-VE')} · Orden {d.orden}
+                        </span>
+                        <span className="font-inter text-xs text-gray-400 dark:text-gray-500">
+                          Vence {new Date(d.fechaVencimiento + 'T00:00:00').toLocaleDateString('es-VE')}
+                        </span>
+                      </div>
+
+                      {d.items.length === 0 ? (
+                        <div className="font-inter text-xs text-gray-400 dark:text-gray-500 italic pl-3">
+                          Sin desglose de productos (registrada antes de esta mejora)
+                        </div>
+                      ) : (
+                        <table className="w-full">
+                          <tbody>
+                            {d.items.map((it: any, i: number) => (
+                              <tr key={i}>
+                                <td className="font-inter text-xs text-gray-600 dark:text-gray-300 py-0.5 pl-3">
+                                  {it.cantidad} × {it.producto?.nombre || '—'}
+                                </td>
+                                <td className="font-grotesk text-xs text-right text-gray-600 dark:text-gray-300">
+                                  ${((it.producto?.precio || 0) * it.cantidad).toFixed(2)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+
+                      <div className="flex items-center justify-between mt-2 pl-3">
+                        {d.pagado > 0 && (
+                          <span className="font-inter text-xs text-green-600 dark:text-green-400">
+                            Abonado: −${d.pagado.toFixed(2)}
+                          </span>
+                        )}
+                        <span className="font-grotesk font-bold text-sm text-onSurface dark:text-[#e4e6f0] ml-auto">
+                          ${d.pendiente.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  </div>
+                  ))}
+
+                  <div className="flex items-center justify-between pt-2 mt-2 border-t-2 border-gray-200 dark:border-[#2d3148]">
+                    <span className="font-manrope font-bold text-base text-onSurface dark:text-[#e4e6f0]">
+                      TOTAL PENDIENTE
+                    </span>
+                    <span className="font-grotesk font-bold text-2xl text-primary dark:text-[#5bb3e8]">
+                      ${totalPendiente.toFixed(2)}
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <Toast toast={toast} />
     </div>

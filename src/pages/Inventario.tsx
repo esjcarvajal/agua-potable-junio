@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { ajustarInventario, fijarInventario, registrarMovimiento } from '../lib/db'
+import { useAuthStore } from '../store/useAuthStore'
 import { useAppStore } from '../store/useAppStore'
 import { insertRow, readSheet } from '../lib/db'
 import {
@@ -78,8 +80,11 @@ export default function Inventario() {
     botellonNuevo19L, botellonNuevo12L, botellonNuevo5L,
     tapasReusables, hielo, helado,
     dispensadorAgua, agarraderosManuales, cepillosLavado,
-    usdToVes, formatUsd, pushInventario
+    usdToVes, formatUsd
   } = store
+
+  // Para dejar constancia de quien registro cada movimiento
+  const sesion = useAuthStore(st => st.sesion)
 
   // ── Movimientos ────────────────────────────────────────────────
   const [movimientos, setMovimientos] = useState<Movimiento[]>([])
@@ -94,6 +99,13 @@ export default function Inventario() {
 
   // ── Insumo modal ───────────────────────────────────────────────
   const [showInsumoModal, setShowInsumoModal] = useState(false)
+  // Sumar (compra) o fijar el numero exacto (conteo fisico).
+  // Antes solo se podia sumar: para corregir habia que calcular la
+  // diferencia a mano, y era facil equivocarse.
+  const [modoInsumo, setModoInsumo] = useState<'sumar' | 'fijar'>('sumar')
+  const [showHistorial, setShowHistorial] = useState(false)
+  const [historial, setHistorial] = useState<any[]>([])
+  const [cargandoHistorial, setCargandoHistorial] = useState(false)
   const [insumoActivo, setInsumoActivo] = useState<InsumoTipo>('tapas')
   const [inputCantidad, setInputCantidad] = useState('')
   const [inputCosto, setInputCosto] = useState('')
@@ -249,21 +261,63 @@ export default function Inventario() {
     setLitrosRechazo(100)
   }
 
+  // ── Historial de movimientos ──────────────────────────────────
+  const abrirHistorial = async () => {
+    setShowHistorial(true)
+    setCargandoHistorial(true)
+    const datos = await readSheet('movimientos_inventario')
+    setHistorial(
+      datos.sort((a: any, b: any) => String(b.fecha).localeCompare(String(a.fecha))).slice(0, 200)
+    )
+    setCargandoHistorial(false)
+  }
+
   const handleRegistrarInsumo = async () => {
     const cantidad = parseInt(inputCantidad) || 0
     const costo = parseFloat(inputCosto) || 0
+
+    if (modoInsumo === 'fijar') {
+      // Conteo fisico: el numero que escribe el usuario ES el stock.
+      // Se admite el cero, que es justo lo que antes no se podia guardar.
+      if (cantidad < 0) {
+        showToast('La cantidad no puede ser negativa', 'error')
+        return
+      }
+      const anterior = insumoValues[insumoActivo] as number
+      useAppStore.setState({ [insumoActivo]: cantidad } as any)
+      await fijarInventario(insumoActivo, cantidad)
+      await registrarMovimiento({
+        campo: insumoActivo,
+        delta: cantidad - anterior,
+        motivo: 'conteo',
+        usuario: sesion?.nombre || '',
+        nota: `Conteo fisico: de ${anterior} a ${cantidad}`,
+      })
+      showToast(`${INSUMO_CONFIG[insumoActivo].label}: stock fijado en ${cantidad}`, 'success')
+      setInputCantidad('')
+      setInputCosto('')
+      setShowInsumoModal(false)
+      return
+    }
 
     if (cantidad <= 0) {
       showToast('La cantidad debe ser mayor a cero', 'error')
       return
     }
 
-    // Actualizar store
+    // Pantalla al instante; el servidor manda.
     useAppStore.setState(state => ({
       [insumoActivo]: (state[insumoActivo] as number) + cantidad
     }))
-    // Publicar snapshot al cloud
-    setTimeout(() => pushInventario(), 500)
+    // Suma atomica: no pisa lo que otro equipo haya descontado mientras tanto.
+    await ajustarInventario({ [insumoActivo]: cantidad })
+    await registrarMovimiento({
+      campo: insumoActivo,
+      delta: cantidad,
+      motivo: 'compra',
+      usuario: sesion?.nombre || '',
+      nota: `Compra de ${INSUMO_CONFIG[insumoActivo].label}`,
+    })
 
     const registro = {
       id: crypto.randomUUID(),
@@ -310,12 +364,30 @@ export default function Inventario() {
       return
     }
 
-    // Actualizar store
+    const A_FIREBASE: Record<string, string> = {
+      botellonNuevo19L: 'botellon_nuevo_19l',
+      botellonNuevo12L: 'botellon_nuevo_12l',
+      botellonNuevo5L: 'botellon_nuevo_5l',
+      tapasReusables: 'tapas_reusables',
+      hielo: 'hielo',
+      helado: 'helado',
+      dispensadorAgua: 'dispensador_agua',
+      agarraderosManuales: 'agarraderos_manuales',
+      cepillosLavado: 'cepillos_lavado',
+    }
+
     useAppStore.setState(state => ({
       [productoActivo]: ((state as any)[productoActivo] as number) + cantidad
     }))
-    // Publicar snapshot al cloud
-    setTimeout(() => pushInventario(), 500)
+    const campoFb = A_FIREBASE[productoActivo] || productoActivo
+    await ajustarInventario({ [campoFb]: cantidad })
+    await registrarMovimiento({
+      campo: campoFb,
+      delta: cantidad,
+      motivo: 'compra',
+      usuario: sesion?.nombre || '',
+      nota: `Compra de ${PRODUCTO_CONFIG[productoActivo].label}`,
+    })
 
     const config = PRODUCTO_CONFIG[productoActivo]
     const registro = {
@@ -409,6 +481,17 @@ export default function Inventario() {
           Agua Potable La Campiña — Flujo de producción, insumos y movimientos
         </p>
       </div>
+
+      {/* Historial: responde a "¿dónde se fueron las tapas?" sin tener que
+          mirar la base de datos. Antes no existía ningún registro. */}
+      <button
+        onClick={abrirHistorial}
+        className="mb-6 px-4 py-2 rounded-xl font-manrope font-bold text-xs
+          text-primary dark:text-[#5bb3e8] bg-blue-50 dark:bg-[#1a1d27]
+          hover:bg-blue-100 dark:hover:bg-[#232735] transition-colors"
+      >
+        Ver historial de movimientos
+      </button>
 
       {/* ═══════════════════════════════════════════════════════════════
          SECCIÓN 1 — FLUJO DE PRODUCCIÓN
@@ -976,6 +1059,85 @@ export default function Inventario() {
       {/* ═══════════════════════════════════════════════════════════════
          MODAL — REGISTRAR COMPRA DE INSUMO
          ═══════════════════════════════════════════════════════════════ */}
+      {/* ── Historial de movimientos ─────────────────────────────── */}
+      {showHistorial && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowHistorial(false)} />
+          <div className="relative bg-white dark:bg-[#1e2235] rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-700">
+              <div>
+                <h3 className="font-manrope font-bold text-lg text-[#191c1e] dark:text-[#e4e6f0]">
+                  Historial de movimientos
+                </h3>
+                <p className="font-inter text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Últimos 200 movimientos, del más reciente al más antiguo
+                </p>
+              </div>
+              <button onClick={() => setShowHistorial(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-5">
+              {cargandoHistorial && (
+                <p className="font-inter text-sm text-gray-500 dark:text-gray-400 text-center py-8">
+                  Cargando…
+                </p>
+              )}
+
+              {!cargandoHistorial && historial.length === 0 && (
+                <div className="text-center py-8">
+                  <p className="font-inter text-sm text-gray-500 dark:text-gray-400">
+                    Todavía no hay movimientos registrados.
+                  </p>
+                  <p className="font-inter text-xs text-gray-400 dark:text-gray-500 mt-1">
+                    El historial empieza a llenarse desde ahora. Los movimientos
+                    anteriores a esta actualización no quedaron guardados.
+                  </p>
+                </div>
+              )}
+
+              {!cargandoHistorial && historial.length > 0 && (
+                <div className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {historial.map((m: any) => {
+                    const d = new Date(m.fecha)
+                    const suma = Number(m.delta) > 0
+                    return (
+                      <div key={m.id} className="py-2.5 flex items-start gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-inter text-sm text-[#191c1e] dark:text-[#e4e6f0]">
+                            {String(m.campo).replace(/_/g, ' ')}
+                          </div>
+                          <div className="font-inter text-xs text-gray-500 dark:text-gray-400">
+                            {d.toLocaleDateString('es-VE')} · {d.toLocaleTimeString('es-VE')}
+                            {m.usuario ? ` · ${m.usuario}` : ''}
+                            {m.referencia ? ` · ${m.referencia}` : ''}
+                          </div>
+                          {m.nota && (
+                            <div className="font-inter text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+                              {m.nota}
+                            </div>
+                          )}
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <div className={`font-grotesk font-bold text-sm ${
+                            suma ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                            {suma ? '+' : ''}{m.delta}
+                          </div>
+                          <div className="font-inter text-[10px] text-gray-400 dark:text-gray-500 uppercase">
+                            {m.motivo}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showInsumoModal && (() => {
         const config = INSUMO_CONFIG[insumoActivo]
         const Icon = config.icon
@@ -1068,6 +1230,33 @@ export default function Inventario() {
                   )}
                 </div>
               )}
+
+              {/* Sumar o fijar */}
+              <div className="flex gap-2 mb-4 p-1 bg-gray-100 dark:bg-[#1a1d27] rounded-xl">
+                <button
+                  onClick={() => setModoInsumo('sumar')}
+                  className={`flex-1 py-2 rounded-lg font-manrope font-bold text-xs transition-colors ${
+                    modoInsumo === 'sumar'
+                      ? 'bg-white dark:bg-[#2d3148] text-primary dark:text-[#5bb3e8] shadow-sm'
+                      : 'text-gray-500 dark:text-gray-400'}`}
+                >
+                  Sumar compra
+                </button>
+                <button
+                  onClick={() => setModoInsumo('fijar')}
+                  className={`flex-1 py-2 rounded-lg font-manrope font-bold text-xs transition-colors ${
+                    modoInsumo === 'fijar'
+                      ? 'bg-white dark:bg-[#2d3148] text-primary dark:text-[#5bb3e8] shadow-sm'
+                      : 'text-gray-500 dark:text-gray-400'}`}
+                >
+                  Conteo físico
+                </button>
+              </div>
+              <p className="font-inter text-xs text-gray-500 dark:text-gray-400 mb-4">
+                {modoInsumo === 'sumar'
+                  ? 'Suma lo que acaba de comprar a lo que ya había.'
+                  : 'Escriba cuántas unidades hay ahora mismo en el depósito. Reemplaza el número actual.'}
+              </p>
 
               {/* Botones */}
               <div className="flex gap-3">

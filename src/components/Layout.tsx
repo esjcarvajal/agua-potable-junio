@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Droplets, Users, Package, BarChart3, Settings, Bell, ShoppingCart, Sun, Moon, LogOut, RefreshCw } from 'lucide-react'
+import { LayoutDashboard, Droplets, Users, Package, BarChart3, Settings, Bell, ShoppingCart, Sun, Moon, LogOut, RefreshCw, Briefcase, ExternalLink } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useAuthStore } from '../store/useAuthStore'
 import { tienePermiso } from '../lib/permisos'
@@ -9,13 +9,25 @@ import AlertaDeudas from './AlertaDeudas'
 import Login from './Login'
 import { useConfig } from '../lib/useConfig'
 
-const navItems = [
+type NavItem = {
+    to: string
+    icon: typeof LayoutDashboard
+    label: string
+    permiso: string
+    /** Si es true se renderiza como <a> real (salida de la SPA), no como <NavLink>. */
+    externo?: boolean
+}
+
+const navItems: NavItem[] = [
     { to: '/app', icon: LayoutDashboard, label: 'Panel Principal', permiso: 'verDashboard' },
     { to: '/app/pos', icon: ShoppingCart, label: 'Punto de Venta', permiso: 'verPOS' },
     { to: '/app/clientes', icon: Users, label: 'Clientes', permiso: 'verClientes' },
     { to: '/app/inventario', icon: Package, label: 'Inventario', permiso: 'verInventario' },
     { to: '/app/reportes', icon: BarChart3, label: 'Reportes', permiso: 'verReportes' },
     { to: '/app/admin', icon: Settings, label: 'Administración', permiso: 'verAdmin' },
+    // Aplicación Laravel independiente. El control de acceso real lo hace el
+    // middleware `auth` de Laravel, no este enlace.
+    { to: '/nomina/dashboard', icon: Briefcase, label: 'Nómina', permiso: 'verNomina', externo: true },
 ]
 
 export default function Layout() {
@@ -83,7 +95,7 @@ export default function Layout() {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const location = useLocation()
     const paginaActual = navItemsFiltrados.find(n =>
-        n.to === '/app' ? location.pathname === '/app' : location.pathname.startsWith(n.to)
+        n.externo ? false : n.to === '/app' ? location.pathname === '/app' : location.pathname.startsWith(n.to)
     )
     const tituloHeader = paginaActual?.label || 'Agua Potable La Campiña'
 
@@ -97,21 +109,37 @@ export default function Layout() {
                     <div className="text-gray-400 dark:text-gray-500 text-xs mt-0.5 font-inter">{config.nombreEstacion}</div>
                 </div>
                 <nav className="flex-1 p-3 space-y-1">
-                    {navItemsFiltrados.map(({ to, icon: Icon, label }) => (
-                        <NavLink
-                            key={to}
-                            to={to}
-                            end={to === '/app'}
-                            className={({ isActive }) =>
-                                `flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-inter transition-colors ${isActive
-                                    ? 'bg-blue-50 dark:bg-[#1a1d27] text-primary dark:text-[#5bb3e8] font-medium'
-                                    : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-[#1a1d27] hover:text-gray-700 dark:hover:text-gray-200'
-                                }`
-                            }
-                        >
-                            <Icon size={18} />
-                            {label}
-                        </NavLink>
+                    {navItemsFiltrados.map(({ to, icon: Icon, label, externo }) => (
+                        externo ? (
+                            <a
+                                key={to}
+                                href={to}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Abre el sistema de nómina en una pestaña nueva. Requiere su propio usuario y contraseña."
+                                className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-inter transition-colors
+                                    text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-[#1a1d27] hover:text-gray-700 dark:hover:text-gray-200"
+                            >
+                                <Icon size={18} />
+                                {label}
+                                <ExternalLink size={13} className="ml-auto opacity-50" />
+                            </a>
+                        ) : (
+                            <NavLink
+                                key={to}
+                                to={to}
+                                end={to === '/app'}
+                                className={({ isActive }) =>
+                                    `flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-inter transition-colors ${isActive
+                                        ? 'bg-blue-50 dark:bg-[#1a1d27] text-primary dark:text-[#5bb3e8] font-medium'
+                                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-[#1a1d27] hover:text-gray-700 dark:hover:text-gray-200'
+                                    }`
+                                }
+                            >
+                                <Icon size={18} />
+                                {label}
+                            </NavLink>
+                        )
                     ))}
                 </nav>
                 <div className="p-3 border-t border-gray-100 dark:border-[#2d3148]">
@@ -214,7 +242,7 @@ export default function Layout() {
 
                 {/* BOTTOM NAV MÓVIL — muestra todos los ítems permitidos */}
                 <nav className="md:hidden flex border-t border-gray-100 dark:border-[#2d3148] bg-white dark:bg-[#1e2235] overflow-x-auto no-scrollbar flex-shrink-0 mobile-nav-safe">
-                    {navItemsFiltrados.map(({ to, icon: Icon, label }) => {
+                    {navItemsFiltrados.map(({ to, icon: Icon, label, externo }) => {
                         // Abreviaciones para el menú móvil
                         const labelCorto = {
                             'Panel Principal': 'Panel',
@@ -223,7 +251,24 @@ export default function Layout() {
                             'Inventario': 'Stock',
                             'Reportes': 'Reportes',
                             'Administración': 'Admin',
+                            'Nómina': 'Nómina',
                         }[label] || label.split(' ')[0]
+
+                        if (externo) {
+                            return (
+                                <a
+                                    key={to}
+                                    href={to}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex-1 min-w-[60px] flex flex-col items-center justify-center py-2 gap-0.5 font-inter transition-colors
+                                        text-gray-500 dark:text-white hover:text-gray-600 dark:hover:text-gray-200"
+                                >
+                                    <Icon size={18} strokeWidth={2} />
+                                    <span className="text-[9px] leading-tight text-center font-bold">{labelCorto}</span>
+                                </a>
+                            )
+                        }
 
                         return (
                             <NavLink

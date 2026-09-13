@@ -10,6 +10,7 @@ export const permisos = {
     anularVentas: false,
     verCierreCaja: false,
     registrarInsumos: true,
+    verNomina: false,
   },
   administrador: {
     verDashboard: true,
@@ -22,6 +23,7 @@ export const permisos = {
     anularVentas: true,
     verCierreCaja: true,
     registrarInsumos: true,
+    verNomina: true,
   }
 }
 

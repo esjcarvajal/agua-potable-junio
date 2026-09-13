@@ -10,3 +10,23 @@
 .mobile-nav-safe {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
+/* ────────────────────────────────────────────────────────────────
+   IMPRESIÓN DEL ESTADO DE CUENTA
+   Oculta toda la aplicación y deja solo el desglose, para que el
+   cliente pueda imprimirlo o guardarlo en PDF desde el navegador.
+   ──────────────────────────────────────────────────────────────── */
+@media print {
+  body * { visibility: hidden; }
+  #estado-cuenta-imprimible,
+  #estado-cuenta-imprimible * { visibility: visible; }
+  #estado-cuenta-imprimible {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 0;
+    color: #000;
+    background: #fff;
+  }
+  @page { margin: 1.5cm; }
+}
