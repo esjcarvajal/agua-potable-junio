@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { insertRow, updateRow, subscribeToNode, deleteNode, ajustarInventario, registrarMovimiento } from '../lib/db'
+import { insertRow, updateRow, subscribeToNode, deleteNode, ajustarInventario, registrarMovimiento, descontarLitrosServidor, agregarLitrosServidor, ajustarDeudaCliente } from '../lib/db'
 import { getLocalDateString } from '../lib/dateUtils'
 
 export interface DeudaPostpago {
@@ -239,13 +239,25 @@ export const useAppStore = create<AppState>()(
                 // Si aún falta por descontar, se quita del Jumbo (2500L)
                 const nuevoJumbo = Math.max(0, s.litrosJumbo - faltante)
 
+                // Actualizacion optimista: la pantalla responde al instante.
+                // La cifra definitiva la fija el servidor unas lineas mas abajo.
                 set({
                     litrosTanques: nuevosTanques,
                     litrosJumbo: nuevoJumbo,
                     litrosVendidosHoy: s.litrosVendidosHoy + litros
                 })
-                // Publicar snapshot al cloud después de cada venta
-                setTimeout(() => get().pushInventario(), 500)
+
+                // El descuento REAL se calcula en el servidor sobre lo que hay
+                // alli en ese momento, no sobre esta copia local. Asi dos cajas
+                // vendiendo a la vez no se pisan.
+                descontarLitrosServidor(litros).then(res => {
+                    if (res?.ok) {
+                        set({ litrosJumbo: res.litrosJumbo, litrosTanques: res.litrosTanques })
+                    } else {
+                        // Sin conexion o nodo ausente: queda pendiente de sincronizar
+                        set(st => ({ pendientesSync: [...st.pendientesSync, { tipo: 'litros_descuento', data: { litros } }] }))
+                    }
+                })
             },
 
             /**
@@ -275,13 +287,22 @@ export const useAppStore = create<AppState>()(
                     restante -= agregar
                 }
 
-                // Aplicar cambios al store
+                // Actualizacion optimista para que la pantalla responda ya
                 set({
                     litrosTanques: nuevosTanques,
                     litrosJumbo: state.litrosJumbo + jumboAgregado,
                 })
-                // Publicar snapshot al cloud
-                setTimeout(() => get().pushInventario(), 500)
+
+                // El reparto REAL lo hace el servidor sobre su propio estado.
+                // Si otra caja vendio mientras tanto, la cisterna se suma a lo
+                // que quedaba de verdad, no a la foto vieja de este navegador.
+                agregarLitrosServidor(litros, 2500).then(res => {
+                    if (res?.ok) {
+                        set({ litrosJumbo: res.litrosJumbo, litrosTanques: res.litrosTanques })
+                    } else {
+                        set(st => ({ pendientesSync: [...st.pendientesSync, { tipo: 'litros_carga', data: { litros } }] }))
+                    }
+                })
 
                 return {
                     almacenados: litros - restante,
@@ -357,6 +378,22 @@ export const useAppStore = create<AppState>()(
             agregarDeuda: async (deuda) => {
                 set((s) => ({ deudas: [deuda, ...s.deudas] }))
                 insertRow('deudas_postpago', deuda)
+
+                // Sumar al total adeudado del cliente. Sin esto la venta a
+                // credito quedaba registrada pero el saldo del cliente no
+                // subia, el limite de credito nunca frenaba nada y el POS
+                // mostraba deuda cero aunque el cliente debiera.
+                const monto = Math.max(0, Number(deuda.montoUsd) || 0)
+                if (deuda.clienteId && monto > 0) {
+                    const nuevoTotal = await ajustarDeudaCliente(deuda.clienteId, monto)
+                    set((s) => ({
+                        clientes: s.clientes.map((c: any) =>
+                            c.id === deuda.clienteId
+                                ? { ...c, deudaTotalUsd: nuevoTotal ?? ((Number(c.deudaTotalUsd) || 0) + monto) }
+                                : c
+                        )
+                    }))
+                }
             },
             // ── Abono parcial a deuda ─────────────────────────────
             // Permite amortizar una deuda por partes. Si el abono cubre
@@ -394,12 +431,14 @@ export const useAppStore = create<AppState>()(
                 // Descontar del total adeudado del cliente SOLO lo abonado
                 const cliente = s.clientes.find(c => c.id === deuda.clienteId)
                 if (cliente) {
-                    const nuevaDeudaTotal = Math.max(0, (Number(cliente.deudaTotalUsd) || 0) - abonado)
+                    // Resta atomica en el servidor: si otra caja vendio a
+                    // credito en el mismo instante, esa venta no se pierde.
+                    const nuevoTotal = await ajustarDeudaCliente(cliente.id, -abonado)
+                    const aplicado = nuevoTotal ?? Math.max(0, (Number(cliente.deudaTotalUsd) || 0) - abonado)
                     set((st) => ({
                         clientes: st.clientes.map(c =>
-                            c.id === cliente.id ? { ...c, deudaTotalUsd: nuevaDeudaTotal } : c)
+                            c.id === cliente.id ? { ...c, deudaTotalUsd: aplicado } : c)
                     }))
-                    updateRow('clientes', cliente.id, { deudaTotalUsd: nuevaDeudaTotal })
                 }
 
                 // Registrar el abono como venta: es dinero que entra a caja
@@ -452,9 +491,9 @@ export const useAppStore = create<AppState>()(
                 // Actualizar estado local del cliente restándole a su deuda
                 const cliente = s.clientes.find(c => c.id === deuda.clienteId)
                 if (cliente) {
-                    const nuevaDeudaTotal = Math.max(0, (cliente.deudaTotalUsd || 0) - pendiente)
-                    set((s) => ({ clientes: s.clientes.map(c => c.id === cliente.id ? { ...c, deudaTotalUsd: nuevaDeudaTotal } : c) }))
-                    updateRow('clientes', cliente.id, { deudaTotalUsd: nuevaDeudaTotal })
+                    const nuevoTotal = await ajustarDeudaCliente(cliente.id, -pendiente)
+                    const aplicado = nuevoTotal ?? Math.max(0, (cliente.deudaTotalUsd || 0) - pendiente)
+                    set((s) => ({ clientes: s.clientes.map(c => c.id === cliente.id ? { ...c, deudaTotalUsd: aplicado } : c) }))
                 }
 
                 // Generar cobro como venta
@@ -808,9 +847,30 @@ export const useAppStore = create<AppState>()(
                     'deudas_postpago',
                     'cierres_caja',
                     'movimientos_agua',
-                    'inventario_snapshot'
                 ]
                 await Promise.all(nodosABorrar.map(nodo => deleteNode(nodo)))
+
+                // El inventario NO se borra: se deja escrito en ceros.
+                // Si se borraba el nodo, cualquier equipo que siguiera abierto
+                // lo recreaba con los litros que tenia en memoria y el conteo
+                // volvia al valor anterior. Escribiendo ceros, ese equipo
+                // recibe el cero por la suscripcion y se alinea.
+                await updateRow('inventario_snapshot', 'INVENTARIO_SNAPSHOT', {
+                    litros_jumbo: 0,
+                    litros_tanques_json: JSON.stringify(
+                        Array.from({ length: 11 }, (_, i) => ({
+                            id: `TK-${String(i + 1).padStart(2, '0')}`,
+                            nombre: `Tanque ${i + 1}`,
+                            litros: 0,
+                            capacidad: 1000,
+                        }))
+                    ),
+                    tapas: 0, precintos: 0, etiquetas: 0,
+                    botellon_nuevo_19l: 0, botellon_nuevo_12l: 0, botellon_nuevo_5l: 0,
+                    tapas_reusables: 0, hielo: 0, helado: 0,
+                    dispensador_agua: 0, agarraderos_manuales: 0, cepillos_lavado: 0,
+                    actualizado_en: new Date().toISOString(),
+                })
 
                 // 2. Limpiar estado local de Zustand
                 set({

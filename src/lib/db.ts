@@ -140,6 +140,159 @@ export async function fijarInventario(campo: string, valor: number): Promise<boo
 }
 
 /**
+ * Descuenta litros de forma ATOMICA sobre el estado del servidor.
+ *
+ * Antes el descuento se calculaba sobre la copia en memoria del navegador y
+ * luego se subia el snapshot completo. Con dos equipos abiertos, el segundo
+ * en escribir pisaba al primero: una caja registraba la cisterna, otra
+ * vendia sin haber recibido ese dato, y al subir su foto borraba los miles
+ * de litros recien cargados. De ahi venia el "nunca descuenta nada".
+ *
+ * Ahora la resta ocurre DENTRO de la transaccion, sobre lo que hay en el
+ * servidor en ese instante. Si alguien escribe en medio, Firebase reintenta
+ * con el valor nuevo.
+ *
+ * Orden de descuento: primero los tanques de agua cruda (del ultimo al
+ * primero), y solo si no alcanza se toca el reservorio filtrado.
+ */
+export async function descontarLitrosServidor(litros: number): Promise<{
+    ok: boolean
+    litrosJumbo: number
+    litrosTanques: any[]
+} | null> {
+    const pedido = Math.max(0, Number(litros) || 0)
+    if (pedido <= 0) return null
+    try {
+        const resultado = await runTransaction(ref(db, SNAPSHOT_PATH), (actual) => {
+            // Nodo inexistente: abortar en vez de crearlo con datos inventados
+            if (!actual) return
+            let tanques: any[] = []
+            try { tanques = JSON.parse(actual.litros_tanques_json || '[]') } catch { tanques = [] }
+
+            let faltante = pedido
+            for (let i = tanques.length - 1; i >= 0 && faltante > 0; i--) {
+                const disponible = Math.max(0, Number(tanques[i].litros) || 0)
+                const quitar = Math.min(disponible, faltante)
+                tanques[i].litros = disponible - quitar
+                faltante -= quitar
+            }
+            const jumbo = Math.max(0, Number(actual.litros_jumbo) || 0)
+            const nuevoJumbo = Math.max(0, jumbo - faltante)
+
+            return {
+                ...actual,
+                litros_jumbo: nuevoJumbo,
+                litros_tanques_json: JSON.stringify(tanques),
+                actualizado_en: new Date().toISOString(),
+            }
+        })
+        if (!resultado.committed || !resultado.snapshot.exists()) return null
+        const val = resultado.snapshot.val()
+        let tanques: any[] = []
+        try { tanques = JSON.parse(val.litros_tanques_json || '[]') } catch { tanques = [] }
+        return { ok: true, litrosJumbo: Number(val.litros_jumbo) || 0, litrosTanques: tanques }
+    } catch (err) {
+        console.error('[descontarLitrosServidor] Error:', err)
+        return null
+    }
+}
+
+/**
+ * Suma litros de forma ATOMICA (llegada de cisterna).
+ *
+ * Llena primero el reservorio filtrado hasta su tope y reparte el resto
+ * entre los tanques de agua cruda. Lo que no cabe se devuelve como sobrante.
+ */
+export async function agregarLitrosServidor(litros: number, topeJumbo = 2500): Promise<{
+    ok: boolean
+    litrosJumbo: number
+    litrosTanques: any[]
+    jumboAgregado: number
+    tanquesAgregado: number
+    sobrante: number
+} | null> {
+    const pedido = Math.max(0, Number(litros) || 0)
+    if (pedido <= 0) return null
+    let jumboAgregado = 0
+    let tanquesAgregado = 0
+    let sobrante = 0
+    try {
+        const resultado = await runTransaction(ref(db, SNAPSHOT_PATH), (actual) => {
+            if (!actual) return
+            // Reiniciar acumuladores: la transaccion puede reintentarse
+            jumboAgregado = 0; tanquesAgregado = 0; sobrante = 0
+
+            let tanques: any[] = []
+            try { tanques = JSON.parse(actual.litros_tanques_json || '[]') } catch { tanques = [] }
+
+            const jumbo = Math.max(0, Number(actual.litros_jumbo) || 0)
+            let restante = pedido
+
+            const espacioJumbo = Math.max(0, topeJumbo - jumbo)
+            jumboAgregado = Math.min(restante, espacioJumbo)
+            restante -= jumboAgregado
+
+            for (let i = 0; i < tanques.length && restante > 0; i++) {
+                const cap = Number(tanques[i].capacidad) || 1000
+                const lit = Math.max(0, Number(tanques[i].litros) || 0)
+                const agregar = Math.min(restante, Math.max(0, cap - lit))
+                tanques[i].litros = lit + agregar
+                tanquesAgregado += agregar
+                restante -= agregar
+            }
+            sobrante = restante
+
+            return {
+                ...actual,
+                litros_jumbo: jumbo + jumboAgregado,
+                litros_tanques_json: JSON.stringify(tanques),
+                actualizado_en: new Date().toISOString(),
+            }
+        })
+        if (!resultado.committed || !resultado.snapshot.exists()) return null
+        const val = resultado.snapshot.val()
+        let tanques: any[] = []
+        try { tanques = JSON.parse(val.litros_tanques_json || '[]') } catch { tanques = [] }
+        return {
+            ok: true,
+            litrosJumbo: Number(val.litros_jumbo) || 0,
+            litrosTanques: tanques,
+            jumboAgregado, tanquesAgregado, sobrante,
+        }
+    } catch (err) {
+        console.error('[agregarLitrosServidor] Error:', err)
+        return null
+    }
+}
+
+/**
+ * Suma (o resta) al total adeudado de un cliente de forma ATOMICA.
+ *
+ * Antes las ventas a credito guardaban la deuda en su propia tabla pero
+ * nunca tocaban deudaTotalUsd del cliente, mientras que los abonos SI lo
+ * restaban. Esa asimetria hacia que el saldo derivara a cero: el cliente
+ * podia llevarse mercancia indefinidamente sin que el limite de credito
+ * lo detuviera.
+ */
+export async function ajustarDeudaCliente(clienteId: string, delta: number): Promise<number | null> {
+    const cambio = Number(delta) || 0
+    if (!clienteId || cambio === 0) return null
+    try {
+        const resultado = await runTransaction(
+            ref(db, `clientes/${clienteId}/deudaTotalUsd`),
+            (actual) => {
+                const base = Number(actual) || 0
+                return Math.max(0, parseFloat((base + cambio).toFixed(2)))
+            }
+        )
+        return resultado.committed ? (Number(resultado.snapshot.val()) || 0) : null
+    } catch (err) {
+        console.error('[ajustarDeudaCliente] Error:', err)
+        return null
+    }
+}
+
+/**
  * Deja constancia de un movimiento de inventario.
  *
  * Antes no existia ningun historial: solo la foto actual, que se
