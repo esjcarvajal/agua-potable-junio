@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { useAuthStore } from '../store/useAuthStore'
-import { insertRow, readSheet } from '../lib/db'
+import { insertRow, subscribeToNode } from '../lib/db'
 import { useConfig } from '../lib/useConfig'
 import {
   TrendingUp, Droplets, DollarSign, BarChart3, Calendar,
@@ -229,15 +229,27 @@ export default function Reportes() {
   }
 
   const handleFechaInput = (fecha: string) => {
+    if (!fecha) return
     setFechaInicio(fecha)
+    // Si "desde" queda despues de "hasta", se mueve "hasta" con el
+    if (fecha > fechaFin) setFechaFin(fecha)
+    setRangoActivo('')
+  }
+  const handleFechaFinInput = (fecha: string) => {
+    if (!fecha) return
     setFechaFin(fecha)
+    if (fecha < fechaInicio) setFechaInicio(fecha)
     setRangoActivo('')
   }
 
   useEffect(() => {
     setIsLoadingCierres(true)
-    readSheet('cierres_caja').then(data => {
-      if (Array.isArray(data) && data.length > 0) {
+    // Suscripcion en vivo: antes se leia una sola vez al abrir la pagina,
+    // asi que un cierre hecho en otro equipo no aparecia hasta recargar.
+    const unsub = subscribeToNode('cierres_caja', data => {
+      setIsLoadingCierres(false)
+      if (!Array.isArray(data)) return
+      {
         setCierres(data.map((d: any) => ({
           id: d.id || '',
           fecha: d.fecha || '',
@@ -287,7 +299,8 @@ export default function Reportes() {
           es_automatico: d.es_automatico === 'true' || d.es_automatico === true,
         })))
       }
-    }).finally(() => setIsLoadingCierres(false))
+    })
+    return unsub
   }, [])
 
   // ── Toast ──────────────────────────────────────────────────────
@@ -442,12 +455,32 @@ export default function Reportes() {
     Object.fromEntries(productosConfTabla.map((p: any) => [p.id, parseFloat(p.costoUsd) || 0]))
   , [productosConfTabla])
 
+  // ── Filtro propio del historial de cierres ──────────────────────
+  // Antes el historial dependia del rango de arriba (Hoy por defecto) y,
+  // ademas, el useMemo no escuchaba los cambios de fecha: al tocar
+  // "Semana" o "Mes" la lista no se actualizaba. En la practica solo se
+  // veian los cierres de hoy/ayer. Ahora el historial muestra TODO por
+  // defecto y se puede acotar por mes.
+  const [mesHistorial, setMesHistorial] = useState<string>('todos')
+  const mesesDisponibles = useMemo(() => {
+    const set = new Set<string>()
+    cierres.forEach((c: any) => {
+      const m = String(c.fecha || '').slice(0, 7)
+      if (/^\d{4}-\d{2}$/.test(m)) set.add(m)
+    })
+    return Array.from(set).sort().reverse()
+  }, [cierres])
+  const nombreMes = (m: string) => {
+    const [y, mm] = m.split('-')
+    const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+    return `${meses[parseInt(mm) - 1] || mm} ${y}`
+  }
+
   const cierresEnriquecidos = useMemo(() => {
     return cierres
-      .filter((c: any) => {
-        const f = (c.fecha || '').slice(0, 10)
-        return f >= fechaInicio && f <= fechaFin
-      })
+      .filter((c: any) => mesHistorial === 'todos' || String(c.fecha || '').slice(0, 7) === mesHistorial)
+      .sort((a: any, b: any) =>
+        `${String(b.fecha).slice(0, 10)} ${b.hora_cierre || ''}`.localeCompare(`${String(a.fecha).slice(0, 10)} ${a.hora_cierre || ''}`))
       .map(c => {
         const fechaC = (c.fecha || '').slice(0, 10)
       const ventasC = ventas.filter((v: any) => (v.fecha || '').slice(0, 10) === fechaC)
@@ -476,7 +509,7 @@ export default function Reportes() {
 
       return { ...c, _totalVentas: totalVentasVivo, _utilidad: utilidad }
     })
-  }, [cierres, ventas, costoMapTabla])
+  }, [cierres, ventas, costoMapTabla, mesHistorial])
 
 
   // ── HANDLERS ───────────────────────────────────────────────────
@@ -766,6 +799,16 @@ export default function Reportes() {
                 transition-colors cursor-pointer"
             />
           </div>
+          <span className="font-inter text-xs text-gray-400">hasta</span>
+          <input
+            type="date"
+            value={fechaFin}
+            onChange={e => handleFechaFinInput(e.target.value)}
+            className="px-3 py-2.5 rounded-xl border-2 border-gray-200 dark:border-[#2d3148]
+              bg-white dark:bg-[#1a1d27] text-[#191c1e] dark:text-[#e4e6f0]
+              font-grotesk text-sm font-bold outline-none focus:border-primary dark:focus:border-[#5bb3e8]
+              transition-colors cursor-pointer"
+          />
 
           {/* Quick buttons */}
           <div className="flex gap-1.5">
@@ -1235,9 +1278,21 @@ export default function Reportes() {
 
       {/* ═══════ HISTORIAL DE CIERRES ═════════════════════════════════ */}
       <div className="no-print">
-        <h2 className="font-manrope text-xs font-bold text-gray-500 dark:text-gray-400 tracking-wider uppercase mb-4">
-          Historial de Cierres de Caja
-        </h2>
+        <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+          <h2 className="font-manrope text-xs font-bold text-gray-500 dark:text-gray-400 tracking-wider uppercase">
+            Historial de Cierres de Caja
+            <span className="ml-2 normal-case font-normal text-gray-400">({cierresEnriquecidos.length})</span>
+          </h2>
+          <select
+            value={mesHistorial}
+            onChange={e => setMesHistorial(e.target.value)}
+            className="px-3 py-2 rounded-xl border-2 border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27]
+              text-[#191c1e] dark:text-[#e4e6f0] font-manrope text-xs font-bold outline-none focus:border-primary cursor-pointer"
+          >
+            <option value="todos">Todos los cierres</option>
+            {mesesDisponibles.map(m => <option key={m} value={m}>{nombreMes(m)}</option>)}
+          </select>
+        </div>
         <div className="bg-white dark:bg-[#1e2235] rounded-[12px] shadow-sm overflow-hidden">
           {isLoadingCierres ? (
             <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
@@ -1374,6 +1429,19 @@ export default function Reportes() {
         // Total de transacciones: priorizar count vivo
         const totalTransacciones = ventasDelCierre.length || cierreActual.total_ventas
         const totalDeliveries = ventasDelCierre.filter((v: any) => v.es_delivery).length
+        // Botellones llevados a domicilio (recargas, desinfecciones y
+        // botellones nuevos), no viajes: un viaje puede llevar 7 botellones.
+        const botellonesDelivery = ventasDelCierre
+          .filter((v: any) => v.es_delivery)
+          .reduce((t: number, v: any) => {
+            let items: any[] = []
+            try { items = JSON.parse(v.items_json || '[]') } catch { items = [] }
+            return t + items.reduce((n: number, it: any) => {
+              const id = it.producto?.id || ''
+              const esBotellon = (it.producto?.litros || 0) > 0 || ['p5', 'p8', 'p9'].includes(id)
+              return n + (esBotellon ? (Number(it.cantidad) || 0) : 0)
+            }, 0)
+          }, 0)
 
         // Utilidad: calcular en vivo desde ventasDelCierre con costos de la config
         const productosConf: any[] = (() => {
@@ -1511,8 +1579,9 @@ export default function Reportes() {
                     <div className="bg-blue-50 dark:bg-blue-900/10 rounded-lg p-3 text-center border border-blue-100 dark:border-blue-900/30">
                       <div className="font-inter text-[10px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-bold mb-1">Deliverys Realizados</div>
                       <div className="font-grotesk text-2xl font-bold text-blue-700 dark:text-[#5bb3e8]">
-                        {totalDeliveries} <span className="text-xs font-normal text-blue-500">viajes</span>
+                        {botellonesDelivery} <span className="text-xs font-normal text-blue-500">botellones</span>
                       </div>
+                      <div className="font-inter text-[10px] text-blue-500 mt-0.5">en {totalDeliveries} {totalDeliveries === 1 ? 'viaje' : 'viajes'}</div>
                     </div>
                     <div className="bg-gray-50 dark:bg-[#1a1d27] rounded-lg p-3 text-center border border-gray-100 dark:border-[#2d3148]">
                       <div className="font-inter text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-bold mb-1">Total Transacciones</div>

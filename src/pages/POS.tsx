@@ -1233,8 +1233,10 @@ export default function POS() {
             ciclo: ciclo as 7 | 15 | 30,
             estado: 'pendiente' as const
         }
+        // agregarDeuda ya suma al total del cliente de forma atomica.
+        // Aqui habia una segunda escritura (total viejo + monto) que competia
+        // con esa suma y podia duplicar o pisar la deuda.
         store.agregarDeuda(deuda)
-        store.actualizarCliente(clienteSeleccionado.id, { deudaTotalUsd: (clienteSeleccionado.deudaTotalUsd || 0) + totalUsd })
     }
 
     // 9.7. Consumir el saldo a favor aplicado

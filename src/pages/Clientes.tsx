@@ -250,6 +250,14 @@ export default function Clientes() {
   }
 
   // ── Estado de cuenta ─────────────────────────────────────────────
+  // El POS guardaba el vencimiento como ISO completo y aqui se le pegaba
+  // 'T00:00:00' encima: de ahi el "Vence Invalid Date".
+  const fmtFechaCuenta = (f: any): string => {
+    const base = String(f || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(base)) return '—'
+    const d = new Date(base + 'T00:00:00')
+    return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('es-VE')
+  }
   // Une cada deuda con los productos de su venta. El detalle siempre
   // estuvo guardado en items_json; simplemente no se mostraba.
   const detalleCuenta = useMemo(() => {
@@ -261,8 +269,10 @@ export default function Clientes() {
         let items: any[] = []
         try { items = JSON.parse(venta?.items_json || '[]') } catch { items = [] }
         const pagado = Number((d as any).montoPagadoUsd) || 0
+        const delivery = venta?.es_delivery ? (parseFloat(venta?.costo_delivery_usd) || 0) : 0
         return {
           ...d,
+          delivery,
           orden: venta?.numero_orden || '—',
           empresa: (venta?.nota || '').trim(),
           fecha: venta?.fecha || d.fechaVenta,
@@ -276,6 +286,21 @@ export default function Clientes() {
 
   const totalPendiente = useMemo(
     () => detalleCuenta.reduce((t, d) => t + d.pendiente, 0), [detalleCuenta])
+
+  // Lo que dice la ficha del cliente (lo que muestra el POS como DEUDA)
+  // frente a lo que se puede respaldar venta por venta. Si no cuadran,
+  // se avisa en pantalla (no en lo que se imprime ni se envia).
+  const conciliacionCuenta = useMemo(() => {
+    if (!clienteDetalle) return null
+    const ficha = Math.max(0, parseFloat((clienteDetalle as any).deudaTotalUsd) || 0)
+    const idsConDeuda = new Set(store.deudas.map((d: any) => d.ventaId))
+    const ventasSinFicha = ventas.filter((v: any) =>
+      v.cliente_id === clienteDetalle.id &&
+      v.metodo_pago === 'post_pago' &&
+      !idsConDeuda.has(v.id))
+    const diferencia = parseFloat((ficha - totalPendiente).toFixed(2))
+    return { ficha, diferencia, ventasSinFicha }
+  }, [clienteDetalle, ventas, store.deudas, totalPendiente])
 
   /** Agrupa por empresa receptora. Si ninguna entrega la trae, devuelve un
    *  solo grupo sin título y el desglose se ve como una lista corrida. */
@@ -310,11 +335,11 @@ export default function Clientes() {
         L.push(`*${g.empresa.toUpperCase()}*`)
       }
       for (const d of g.deudas) {
-        const f = new Date(d.fecha + 'T00:00:00').toLocaleDateString('es-VE')
-        L.push(`${f} — Orden ${d.orden}`)
+        L.push(`${fmtFechaCuenta(d.fecha)} — Orden ${d.orden}`)
         for (const it of d.items) {
           L.push(`   ${it.cantidad} x ${it.producto?.nombre || '?'} .... $${((it.producto?.precio || 0) * it.cantidad).toFixed(2)}`)
         }
+        if (d.delivery > 0) L.push(`   Delivery .... $${d.delivery.toFixed(2)}`)
         if (d.pagado > 0) L.push(`   Abonado: -$${d.pagado.toFixed(2)}`)
         L.push(`   Subtotal: $${d.pendiente.toFixed(2)}`)
         L.push('')
@@ -1212,10 +1237,10 @@ export default function Clientes() {
                     <div key={d.id} className="mb-4 pb-4 border-b border-gray-100 dark:border-[#2d3148]">
                       <div className="flex items-center justify-between mb-2">
                         <span className="font-inter font-bold text-sm text-onSurface dark:text-[#e4e6f0]">
-                          {new Date(d.fecha + 'T00:00:00').toLocaleDateString('es-VE')} · Orden {d.orden}
+                          {fmtFechaCuenta(d.fecha)} · Orden {d.orden}
                         </span>
                         <span className="font-inter text-xs text-gray-400 dark:text-gray-500">
-                          Vence {new Date(d.fechaVencimiento + 'T00:00:00').toLocaleDateString('es-VE')}
+                          Vence {fmtFechaCuenta(d.fechaVencimiento)}
                         </span>
                       </div>
 
@@ -1236,6 +1261,12 @@ export default function Clientes() {
                                 </td>
                               </tr>
                             ))}
+                            {d.delivery > 0 && (
+                              <tr>
+                                <td className="font-inter text-xs text-gray-600 dark:text-gray-300 py-0.5 pl-3">Delivery</td>
+                                <td className="font-grotesk text-xs text-right text-gray-600 dark:text-gray-300">${d.delivery.toFixed(2)}</td>
+                              </tr>
+                            )}
                           </tbody>
                         </table>
                       )}
@@ -1263,6 +1294,21 @@ export default function Clientes() {
                       ${totalPendiente.toFixed(2)}
                     </span>
                   </div>
+                  {conciliacionCuenta && (Math.abs(conciliacionCuenta.diferencia) >= 0.01 || conciliacionCuenta.ventasSinFicha.length > 0) && (
+                    <div className="no-print mt-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 font-inter text-xs text-amber-800 dark:text-amber-300">
+                      <b>Revisar antes de cobrar.</b> La ficha del cliente registra una deuda de ${conciliacionCuenta.ficha.toFixed(2)},
+                      pero solo ${totalPendiente.toFixed(2)} está respaldado por órdenes pendientes.
+                      {Math.abs(conciliacionCuenta.diferencia) >= 0.01 && <> Diferencia sin desglose: <b>${conciliacionCuenta.diferencia.toFixed(2)}</b>.</>}
+                      {conciliacionCuenta.ventasSinFicha.length > 0 && (
+                        <div className="mt-2">
+                          Ventas a crédito sin ficha de deuda:
+                          {conciliacionCuenta.ventasSinFicha.map((v: any) => (
+                            <div key={v.id} className="pl-2">· {fmtFechaCuenta(v.fecha)} · Orden {v.numero_orden} · ${(parseFloat(v.total_usd) || 0).toFixed(2)}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>

@@ -28,5 +28,7 @@
     color: #000;
     background: #fff;
   }
+  /* Avisos internos (descuadres) no salen en la hoja del cliente */
+  #estado-cuenta-imprimible .no-print { display: none !important; }
   @page { margin: 1.5cm; }
 }
