@@ -253,9 +253,10 @@ export default function Clientes() {
   // El POS guardaba el vencimiento como ISO completo y aqui se le pegaba
   // 'T00:00:00' encima: de ahi el "Vence Invalid Date".
   const fmtFechaCuenta = (f: any): string => {
-    const base = String(f || '').slice(0, 10)
+    const txt = String(f || '')
+    const base = txt.slice(0, 10)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(base)) return '—'
-    const d = new Date(base + 'T00:00:00')
+    const d = txt.includes('T') ? new Date(txt) : new Date(base + 'T00:00:00')
     return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('es-VE')
   }
   // Une cada deuda con los productos de su venta. El detalle siempre
@@ -286,6 +287,52 @@ export default function Clientes() {
 
   const totalPendiente = useMemo(
     () => detalleCuenta.reduce((t, d) => t + d.pendiente, 0), [detalleCuenta])
+
+  // ── Historial completo de movimientos ────────────────────────────
+  // Todo lo que el sistema tiene de este cliente, pagado o no: entregas a
+  // credito (cargo), abonos y cobros (pago) y compras de contado
+  // (informativas, no mueven saldo). Con saldo corrido.
+  const [verContado, setVerContado] = useState(false)
+  const movimientosCliente = useMemo(() => {
+    if (!clienteDetalle) return []
+    const deudaPorVenta = new Map<string, any>()
+    store.deudas.forEach((d: any) => { if (d.ventaId) deudaPorVenta.set(d.ventaId, d) })
+    const filas = ventas
+      .filter((v: any) => v.cliente_id === clienteDetalle.id)
+      .map((v: any) => {
+        let items: any[] = []
+        try { items = JSON.parse(v.items_json || '[]') } catch { items = [] }
+        const monto = parseFloat(v.total_usd) || 0
+        const esAbono = items.some((i: any) => i?.tipo === 'ABONO_POSTPAGO')
+        const esCobro = items.some((i: any) => i?.tipo === 'COBRO_POSTPAGO')
+        const esCredito = v.metodo_pago === 'post_pago' || deudaPorVenta.has(v.id)
+        const tipo = esAbono ? 'Abono' : esCobro ? 'Pago' : esCredito ? 'Entrega a crédito' : 'Contado'
+        const detalle = (esAbono || esCobro)
+          ? String(v.metodo_pago || '')
+          : items.filter((i: any) => i?.producto).map((i: any) => `${i.cantidad} × ${i.producto?.nombre}`).join(', ')
+            + (v.es_delivery && (parseFloat(v.costo_delivery_usd) || 0) > 0 ? ` + delivery $${(parseFloat(v.costo_delivery_usd) || 0).toFixed(2)}` : '')
+        return {
+          id: v.id,
+          fecha: v.fecha,
+          hora: v.hora || '',
+          orden: v.numero_orden || '—',
+          tipo,
+          detalle,
+          cargo: tipo === 'Entrega a crédito' ? monto : 0,
+          pago: tipo === 'Abono' || tipo === 'Pago' ? monto : 0,
+          contado: tipo === 'Contado' ? monto : 0,
+        }
+      })
+      .sort((a, b) => `${a.fecha} ${a.hora}`.localeCompare(`${b.fecha} ${b.hora}`))
+    let saldo = 0
+    return filas.map(f => {
+      saldo = parseFloat((saldo + f.cargo - f.pago).toFixed(2))
+      return { ...f, saldo }
+    })
+  }, [clienteDetalle, ventas, store.deudas])
+  const movimientosVisibles = useMemo(
+    () => movimientosCliente.filter(m => verContado || m.tipo !== 'Contado'),
+    [movimientosCliente, verContado])
 
   // Lo que dice la ficha del cliente (lo que muestra el POS como DEUDA)
   // frente a lo que se puede respaldar venta por venta. Si no cuadran,
@@ -990,7 +1037,7 @@ export default function Clientes() {
                                         {d.estado.toUpperCase()}
                                       </span>
                                     </div>
-                                    <span className="font-inter text-xs text-gray-500 dark:text-gray-400 block">Diferido: {new Date(d.fechaVencimiento).toLocaleDateString()}</span>
+                                    <span className="font-inter text-xs text-gray-500 dark:text-gray-400 block">Diferido: {fmtFechaCuenta(d.fechaVencimiento)}</span>
                                   </div>
                                   <div className="text-right">
                                     <span className="font-grotesk font-bold text-lg text-primary dark:text-[#5bb3e8] block">${pendienteDeuda(d).toFixed(2)}</span>
@@ -1311,6 +1358,61 @@ export default function Clientes() {
                   )}
                 </>
               )}
+
+              {/* ═══ Historial completo de movimientos ═══ */}
+              <div className="mt-8">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="font-manrope font-bold text-sm text-onSurface dark:text-[#e4e6f0]">
+                    Historial de movimientos
+                  </h4>
+                  <label className="no-print flex items-center gap-1.5 font-inter text-xs text-gray-500 cursor-pointer">
+                    <input type="checkbox" checked={verContado} onChange={e => setVerContado(e.target.checked)} />
+                    Incluir compras de contado
+                  </label>
+                </div>
+                {movimientosVisibles.length === 0 ? (
+                  <p className="font-inter text-xs text-gray-500 dark:text-gray-400 py-4 text-center">
+                    No hay movimientos registrados para este cliente.
+                  </p>
+                ) : (
+                  <>
+                    <p className="font-inter text-[11px] text-gray-400 mb-2">
+                      Desde el {fmtFechaCuenta(movimientosCliente[0]?.fecha)} · {movimientosVisibles.length} movimientos
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs font-inter">
+                        <thead>
+                          <tr className="text-left text-gray-500 border-b border-gray-200 dark:border-[#2d3148]">
+                            <th className="py-1.5 pr-2 font-medium">Fecha</th>
+                            <th className="py-1.5 pr-2 font-medium">Orden</th>
+                            <th className="py-1.5 pr-2 font-medium">Movimiento</th>
+                            <th className="py-1.5 pr-2 font-medium text-right">Cargo</th>
+                            <th className="py-1.5 pr-2 font-medium text-right">Pago</th>
+                            <th className="py-1.5 font-medium text-right">Saldo</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {movimientosVisibles.map(m => (
+                            <tr key={m.id} className="border-b border-gray-50 dark:border-[#2d3148]/50 align-top">
+                              <td className="py-1.5 pr-2 whitespace-nowrap text-gray-600 dark:text-gray-300">{fmtFechaCuenta(m.fecha)}</td>
+                              <td className="py-1.5 pr-2 text-gray-600 dark:text-gray-300">{m.orden}</td>
+                              <td className="py-1.5 pr-2 text-gray-700 dark:text-gray-200">
+                                <span className="font-bold">{m.tipo}</span>
+                                {m.detalle && <span className="block text-[10px] text-gray-400">{m.detalle}</span>}
+                              </td>
+                              <td className="py-1.5 pr-2 text-right font-grotesk">
+                                {m.cargo > 0 ? `$${m.cargo.toFixed(2)}` : m.contado > 0 ? <span className="text-gray-400">(${m.contado.toFixed(2)})</span> : ''}
+                              </td>
+                              <td className="py-1.5 pr-2 text-right font-grotesk text-green-600">{m.pago > 0 ? `$${m.pago.toFixed(2)}` : ''}</td>
+                              <td className="py-1.5 text-right font-grotesk font-bold">${m.saldo.toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
