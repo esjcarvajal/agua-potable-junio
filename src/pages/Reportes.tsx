@@ -1431,17 +1431,22 @@ export default function Reportes() {
         const totalDeliveries = ventasDelCierre.filter((v: any) => v.es_delivery).length
         // Botellones llevados a domicilio (recargas, desinfecciones y
         // botellones nuevos), no viajes: un viaje puede llevar 7 botellones.
-        const botellonesDelivery = ventasDelCierre
+        // Desglose por producto de lo que salio a domicilio
+        const deliveryPorProducto: Record<string, number> = {}
+        ventasDelCierre
           .filter((v: any) => v.es_delivery)
-          .reduce((t: number, v: any) => {
+          .forEach((v: any) => {
             let items: any[] = []
             try { items = JSON.parse(v.items_json || '[]') } catch { items = [] }
-            return t + items.reduce((n: number, it: any) => {
+            items.forEach((it: any) => {
               const id = it.producto?.id || ''
               const esBotellon = (it.producto?.litros || 0) > 0 || ['p5', 'p8', 'p9'].includes(id)
-              return n + (esBotellon ? (Number(it.cantidad) || 0) : 0)
-            }, 0)
-          }, 0)
+              if (!esBotellon) return
+              const nombre = it.producto?.nombre || 'Otro'
+              deliveryPorProducto[nombre] = (deliveryPorProducto[nombre] || 0) + (Number(it.cantidad) || 0)
+            })
+          })
+        const botellonesDelivery = Object.values(deliveryPorProducto).reduce((a, b) => a + b, 0)
 
         // Utilidad: calcular en vivo desde ventasDelCierre con costos de la config
         const productosConf: any[] = (() => {
@@ -1582,6 +1587,17 @@ export default function Reportes() {
                         {botellonesDelivery} <span className="text-xs font-normal text-blue-500">botellones</span>
                       </div>
                       <div className="font-inter text-[10px] text-blue-500 mt-0.5">en {totalDeliveries} {totalDeliveries === 1 ? 'viaje' : 'viajes'}</div>
+                      {Object.keys(deliveryPorProducto).length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-blue-100 dark:border-blue-900/30 space-y-0.5">
+                          {Object.entries(deliveryPorProducto)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([nombre, cant]) => (
+                              <div key={nombre} className="flex justify-between font-inter text-[11px] text-blue-700 dark:text-blue-300">
+                                <span>{nombre}</span><span className="font-bold">{cant}</span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
                     </div>
                     <div className="bg-gray-50 dark:bg-[#1a1d27] rounded-lg p-3 text-center border border-gray-100 dark:border-[#2d3148]">
                       <div className="font-inter text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-bold mb-1">Total Transacciones</div>

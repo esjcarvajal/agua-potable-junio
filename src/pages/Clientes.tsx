@@ -250,6 +250,15 @@ export default function Clientes() {
   }
 
   // ── Estado de cuenta ─────────────────────────────────────────────
+  const imprimirEstadoCuenta = () => {
+    document.body.classList.add('print-estado-cuenta')
+    const quitar = () => {
+      document.body.classList.remove('print-estado-cuenta')
+      window.removeEventListener('afterprint', quitar)
+    }
+    window.addEventListener('afterprint', quitar)
+    window.print()
+  }
   // El POS guardaba el vencimiento como ISO completo y aqui se le pegaba
   // 'T00:00:00' encima: de ahi el "Vence Invalid Date".
   const fmtFechaCuenta = (f: any): string => {
@@ -1238,7 +1247,7 @@ export default function Clientes() {
             <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-[#2d3148] print:hidden">
               <h3 className="font-manrope font-bold text-lg text-onSurface dark:text-[#e4e6f0]">Estado de cuenta</h3>
               <div className="flex items-center gap-2">
-                <button onClick={() => window.print()} title="Imprimir"
+                <button onClick={imprimirEstadoCuenta} title="Imprimir"
                   className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-[#2d3148]"><Printer size={18} /></button>
                 <button onClick={enviarPorWhatsApp} title="Enviar por WhatsApp"
                   className="p-2 rounded-lg text-green-600 hover:bg-green-50 dark:hover:bg-[#2d3148]"><MessageCircle size={18} /></button>

@@ -12,14 +12,17 @@
 }
 /* ────────────────────────────────────────────────────────────────
    IMPRESIÓN DEL ESTADO DE CUENTA
-   Oculta toda la aplicación y deja solo el desglose, para que el
-   cliente pueda imprimirlo o guardarlo en PDF desde el navegador.
+   Solo aplica cuando el body lleva la clase .print-estado-cuenta
+   (la pone el botón Imprimir de Clientes y se quita al terminar).
+   Antes estas reglas eran globales: ocultaban TODO lo que no fuera el
+   estado de cuenta en cualquier impresión, y por eso el cierre de caja
+   y los tickets salían en blanco.
    ──────────────────────────────────────────────────────────────── */
 @media print {
-  body * { visibility: hidden; }
-  #estado-cuenta-imprimible,
-  #estado-cuenta-imprimible * { visibility: visible; }
-  #estado-cuenta-imprimible {
+  body.print-estado-cuenta * { visibility: hidden; }
+  body.print-estado-cuenta #estado-cuenta-imprimible,
+  body.print-estado-cuenta #estado-cuenta-imprimible * { visibility: visible; }
+  body.print-estado-cuenta #estado-cuenta-imprimible {
     position: absolute;
     left: 0;
     top: 0;
@@ -29,6 +32,6 @@
     background: #fff;
   }
   /* Avisos internos (descuadres) no salen en la hoja del cliente */
-  #estado-cuenta-imprimible .no-print { display: none !important; }
+  body.print-estado-cuenta #estado-cuenta-imprimible .no-print { display: none !important; }
   @page { margin: 1.5cm; }
 }
