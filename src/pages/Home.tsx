@@ -54,30 +54,8 @@ function IconShield({ size = 18 }: { size?: number }) {
 export default function Home() {
   const navigate = useNavigate()
 
-  const bannerText = "En Agua Potable La Campiña estamos donando agua potable para los rescatistas, voluntarios y victimas del terremoto, comunicate conmigo para recibir la donacion:"
-  const bannerWhatsAppUrl = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent('Hola, me comunico por la donación de agua potable')}`
-
   return (
     <div className="min-h-screen flex flex-col font-inter bg-white" style={{ fontFamily: 'Inter, sans-serif' }}>
-
-      {/* ── BANNER DE DONACIÓN ─────────────────────────────────────────── */}
-      <div 
-        className="w-full text-center py-2.5 px-4 flex flex-col sm:flex-row items-center justify-center gap-3 z-50 relative"
-        style={{ background: 'linear-gradient(135deg, #e65c00, #F9D423)', color: 'white' }}
-      >
-        <span className="text-sm font-medium leading-tight">
-          <span className="text-lg mr-2">📢</span>
-          {bannerText}
-        </span>
-        <button
-          onClick={() => window.open(bannerWhatsAppUrl, '_blank')}
-          className="flex items-center gap-1.5 bg-white text-sm font-bold px-4 py-1.5 rounded-full shadow-sm hover:scale-105 active:scale-95 transition-all"
-          style={{ color: '#e65c00', flexShrink: 0 }}
-        >
-          <IconWhatsApp size={16} />
-          Contactar
-        </button>
-      </div>
 
       {/* ── NAVBAR ───────────────────────────────────────────────────────── */}
       <header

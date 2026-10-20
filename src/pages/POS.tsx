@@ -2248,6 +2248,7 @@ function OrderPanel({
   setCostoDelivery, metodoPago, setMetodoPago, referenciaPagoMovil,
   setReferenciaPagoMovil, motivoCortesia, setMotivoCortesia, completarTransaccion, usdToVes,
 }: OrderPanelProps) {
+  const navigate = useNavigate()
   const canComplete = carrito.length > 0 && metodoPago !== ''
   const prepagoDisponible = clientePrepagosCount > 0
 
@@ -2316,7 +2317,7 @@ function OrderPanel({
                     PREPAGO: {d.qty} recargas de {d.tipo}
                   </span>
                 ))}
-                {clienteSeleccionado.saldo_usd && parseFloat(clienteSeleccionado.saldo_usd) > 0 && (
+                {(parseFloat(clienteSeleccionado.saldo_usd) || 0) > 0 && (
                   <span className="text-[10px] font-bold font-grotesk px-2 py-0.5 rounded-full text-white"
                     style={{ background: '#005e97' }}>
                     SALDO: ${parseFloat(clienteSeleccionado.saldo_usd).toFixed(2)}
@@ -2400,6 +2401,14 @@ function OrderPanel({
                         ${deudaCliente.toFixed(2)}
                       </span>
                     </div>
+                    {/* Lleva a Clientes > Cuentas por Cobrar de este cliente */}
+                    <button
+                      onClick={() => navigate('/app/clientes', { state: { preseleccionarClienteId: clienteSeleccionado.id } })}
+                      className="mt-1 mb-1 w-full text-center text-[10px] font-bold font-manrope py-1.5 rounded-lg
+                        bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+                    >
+                      Registrar pago de la deuda
+                    </button>
                   </div>
                 )}
 

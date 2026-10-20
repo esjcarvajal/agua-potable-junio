@@ -10,6 +10,11 @@ import { getLocalDateString } from '../lib/dateUtils'
 /* ════════════════════════════════════════════════════════════════════
    TOAST (reusable inline)
    ════════════════════════════════════════════════════════════════════ */
+const ETIQUETA_METODO: Record<string, string> = {
+  efectivo_usd: 'Efectivo USD', efectivo_ves: 'Efectivo VES',
+  pago_movil: 'Pago Móvil', punto_venta: 'Punto de Venta',
+}
+
 interface ToastState { mensaje: string; tipo: 'success' | 'error' | 'warning'; visible: boolean }
 const TOAST_COLORS = { success: '#16a34a', error: '#dc2626', warning: '#d97706' }
 
@@ -99,7 +104,14 @@ export default function Clientes() {
   const [formLimite, setFormLimite] = useState('')
   const [activeTab, setActiveTab] = useState<'datos'|'cobrar'>('datos')
   const [pagoDeudaId, setPagoDeudaId] = useState<string | null>(null)
-  const [pagoMetodo, setPagoMetodo] = useState('EFECTIVO USD')
+  const [pagoMetodo, setPagoMetodo] = useState('efectivo_usd')
+  // Saldar cuenta completa (deja la DEUDA del POS en cero)
+  const [showSaldar, setShowSaldar] = useState(false)
+  const [saldarMonto, setSaldarMonto] = useState('')
+  const [saldarMetodo, setSaldarMetodo] = useState('pago_movil')
+  const [saldarVes, setSaldarVes] = useState('')
+  const [saldarRef, setSaldarRef] = useState('')
+  const [saldando, setSaldando] = useState(false)
   /** Monto a abonar. Vacio = pagar la deuda completa. */
   const [pagoMonto, setPagoMonto] = useState('')
   
@@ -317,7 +329,7 @@ export default function Clientes() {
         const esCredito = v.metodo_pago === 'post_pago' || deudaPorVenta.has(v.id)
         const tipo = esAbono ? 'Abono' : esCobro ? 'Pago' : esCredito ? 'Entrega a crédito' : 'Contado'
         const detalle = (esAbono || esCobro)
-          ? String(v.metodo_pago || '')
+          ? (ETIQUETA_METODO[String(v.metodo_pago || '')] || String(v.metodo_pago || ''))
           : items.filter((i: any) => i?.producto).map((i: any) => `${i.cantidad} × ${i.producto?.nombre}`).join(', ')
             + (v.es_delivery && (parseFloat(v.costo_delivery_usd) || 0) > 0 ? ` + delivery $${(parseFloat(v.costo_delivery_usd) || 0).toFixed(2)}` : '')
         return {
@@ -477,6 +489,7 @@ export default function Clientes() {
     setFormCiclo(c.configPostpago?.ciclo || 7)
     setFormLimite(c.configPostpago?.limiteCredito ? c.configPostpago.limiteCredito.toString() : '')
     setEditMode(false)
+    setShowSaldar(false)
     setActiveTab('datos')
     setShowDetalleModal(true)
   }
@@ -543,8 +556,62 @@ export default function Clientes() {
       'success'
     )
     setPagoDeudaId(null)
-    setPagoMetodo('EFECTIVO USD')
+    setPagoMetodo('efectivo_usd')
     setPagoMonto('')
+  }
+
+  // ── Cuenta completa del cliente abierto (datos en vivo del store) ──
+  const cuentaViva = useMemo(() => {
+    if (!clienteDetalle) return { ficha: 0, respaldado: 0, ordenes: 0, total: 0 }
+    const vivo: any = store.clientes.find((c: any) => c.id === clienteDetalle.id) || clienteDetalle
+    const ficha = Math.max(0, parseFloat(vivo.deudaTotalUsd) || 0)
+    const pend = store.deudas
+      .filter((d: any) => d.clienteId === clienteDetalle.id && d.estado !== 'pagada')
+      .map((d: any) => pendienteDeuda(d))
+      .filter(x => x > 0.001)
+    const respaldado = parseFloat(pend.reduce((t, x) => t + x, 0).toFixed(2))
+    return { ficha, respaldado, ordenes: pend.length, total: Math.max(ficha, respaldado) }
+  }, [clienteDetalle, store.clientes, store.deudas])
+
+  const abrirSaldar = () => {
+    setSaldarMonto(cuentaViva.total.toFixed(2))
+    setSaldarMetodo('pago_movil')
+    setSaldarVes('')
+    setSaldarRef('')
+    setPagoDeudaId(null)
+    setShowSaldar(true)
+  }
+
+  const confirmarSaldar = async () => {
+    if (!clienteDetalle || saldando) return
+    const monto = parseFloat(saldarMonto)
+    if (isNaN(monto) || monto < 0) {
+      showToast('Indica el monto recibido (0 si no se cobró nada)', 'error')
+      return
+    }
+    setSaldando(true)
+    try {
+      const r = await store.saldarCuentaCliente(clienteDetalle.id, {
+        montoRecibidoUsd: monto,
+        metodoPago: saldarMetodo,
+        montoRecibidoVes: parseFloat(saldarVes) || 0,
+        referencia: saldarRef,
+        usuario: sesionActual?.nombre || '',
+      })
+      if (!r.ok) {
+        showToast(r.error || 'No se pudo saldar la cuenta', 'error')
+        return
+      }
+      setShowSaldar(false)
+      showToast(
+        r.cobrado > 0
+          ? `Cuenta en $0 — cobro de $${r.cobrado.toFixed(2)} registrado`
+          : 'Cuenta en $0 — sin cobro registrado',
+        'success'
+      )
+    } finally {
+      setSaldando(false)
+    }
   }
 
   /* ═══════════════════════ RENDER ═══════════════════════ */
@@ -991,10 +1058,10 @@ export default function Clientes() {
                           })()}
                           <select value={pagoMetodo} onChange={e => setPagoMetodo(e.target.value)}
                             className="w-full border-2 border-blue-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-lg p-2 text-sm outline-none focus:border-blue-500 text-gray-800 dark:text-[#e4e6f0] mb-2">
-                            <option value="EFECTIVO USD">Efectivo USD</option>
-                            <option value="PAGO MÓVIL">Pago Móvil</option>
-                            <option value="PUNTO DE VENTA">Punto de Venta</option>
-                            <option value="EFECTIVO VES">Efectivo VES</option>
+                            <option value="efectivo_usd">Efectivo USD</option>
+                            <option value="pago_movil">Pago Móvil</option>
+                            <option value="punto_venta">Punto de Venta</option>
+                            <option value="efectivo_ves">Efectivo VES</option>
                             <option value="SALDO A FAVOR">Saldo a Favor del Cliente</option>
                           </select>
                           <button onClick={procesarPagoDeuda} className="w-full bg-blue-600 text-white font-bold py-2 rounded-lg text-sm hover:bg-blue-700 transition-colors">
@@ -1003,6 +1070,102 @@ export default function Clientes() {
                         </div>
                       )}
                       
+                      {/* ── Deuda total + saldar cuenta completa ── */}
+                      {cuentaViva.total > 0.001 && (
+                        <div className="mb-4 rounded-xl border-2 border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/10 p-4">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="font-manrope font-bold text-xs text-red-800 dark:text-red-300 block">DEUDA TOTAL DEL CLIENTE</span>
+                              <span className="font-inter text-[11px] text-red-700/80 dark:text-red-400/80">
+                                {cuentaViva.ordenes > 0
+                                  ? `${cuentaViva.ordenes} orden(es) pendiente(s): $${cuentaViva.respaldado.toFixed(2)}`
+                                  : 'Sin órdenes pendientes registradas'}
+                              </span>
+                            </div>
+                            <span className="font-grotesk font-bold text-2xl text-red-600 dark:text-red-400">${cuentaViva.total.toFixed(2)}</span>
+                          </div>
+                          {Math.abs(cuentaViva.ficha - cuentaViva.respaldado) >= 0.01 && (
+                            <p className="mt-2 font-inter text-[11px] text-amber-800 dark:text-amber-300">
+                              El POS muestra ${cuentaViva.ficha.toFixed(2)} y las órdenes suman ${cuentaViva.respaldado.toFixed(2)}.
+                              Al saldar, ambas quedan en cero.
+                            </p>
+                          )}
+
+                          {!showSaldar ? (
+                            <button
+                              onClick={abrirSaldar}
+                              className="mt-3 w-full py-2.5 rounded-lg font-manrope font-bold text-sm text-white bg-green-600 hover:bg-green-700 transition-colors"
+                            >
+                              Saldar cuenta completa
+                            </button>
+                          ) : (
+                            <div className="mt-3 space-y-2">
+                              <label className="block font-inter text-xs text-gray-700 dark:text-gray-300">
+                                Monto recibido (USD)
+                                <input
+                                  type="number" min="0" step="0.01"
+                                  value={saldarMonto}
+                                  onChange={e => setSaldarMonto(e.target.value)}
+                                  className="mt-1 w-full border-2 border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-lg p-2 text-sm outline-none focus:border-green-600 text-gray-800 dark:text-[#e4e6f0] font-grotesk font-bold"
+                                />
+                              </label>
+                              {(parseFloat(saldarMonto) || 0) === 0 && (
+                                <p className="font-inter text-[11px] text-amber-800 dark:text-amber-300">
+                                  Con $0 la deuda se borra sin registrar ningún ingreso (corrección o condonación).
+                                </p>
+                              )}
+                              <select
+                                value={saldarMetodo}
+                                onChange={e => setSaldarMetodo(e.target.value)}
+                                className="w-full border-2 border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-lg p-2 text-sm outline-none focus:border-green-600 text-gray-800 dark:text-[#e4e6f0]"
+                              >
+                                <option value="pago_movil">Pago Móvil</option>
+                                <option value="punto_venta">Punto de Venta</option>
+                                <option value="efectivo_ves">Efectivo VES</option>
+                                <option value="efectivo_usd">Efectivo USD</option>
+                              </select>
+                              {saldarMetodo !== 'efectivo_usd' && (
+                                <label className="block font-inter text-xs text-gray-700 dark:text-gray-300">
+                                  Bolívares recibidos (vacío = convertir a la tasa BCV de hoy)
+                                  <input
+                                    type="number" min="0" step="0.01"
+                                    placeholder={((parseFloat(saldarMonto) || 0) * (store.tasaBcv.valor || 0)).toFixed(2)}
+                                    value={saldarVes}
+                                    onChange={e => setSaldarVes(e.target.value)}
+                                    className="mt-1 w-full border-2 border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-lg p-2 text-sm outline-none focus:border-green-600 text-gray-800 dark:text-[#e4e6f0] font-grotesk"
+                                  />
+                                </label>
+                              )}
+                              {(saldarMetodo === 'pago_movil' || saldarMetodo === 'punto_venta') && (
+                                <input
+                                  type="text"
+                                  placeholder="Referencia (opcional)"
+                                  value={saldarRef}
+                                  onChange={e => setSaldarRef(e.target.value)}
+                                  className="w-full border-2 border-gray-200 dark:border-[#2d3148] bg-white dark:bg-[#1a1d27] rounded-lg p-2 text-sm outline-none focus:border-green-600 text-gray-800 dark:text-[#e4e6f0]"
+                                />
+                              )}
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => setShowSaldar(false)}
+                                  disabled={saldando}
+                                  className="flex-1 py-2 rounded-lg font-manrope font-bold text-sm text-gray-600 dark:text-gray-300 border-2 border-gray-200 dark:border-[#2d3148] hover:bg-gray-50 dark:hover:bg-[#2d3148]"
+                                >
+                                  Cancelar
+                                </button>
+                                <button
+                                  onClick={confirmarSaldar}
+                                  disabled={saldando}
+                                  className="flex-[2] py-2 rounded-lg font-manrope font-bold text-sm text-white bg-green-600 hover:bg-green-700 disabled:opacity-60 transition-colors"
+                                >
+                                  {saldando ? 'Guardando…' : 'Confirmar y dejar en $0'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {/* Entregar a crédito: sustituye el metodo de escribir
                           una cifra a mano, que no creaba venta ni descontaba
                           inventario. */}
@@ -1076,7 +1239,7 @@ export default function Clientes() {
                                     </div>
                                   </div>
                                 )}
-                                {d.estado === 'pendiente' && !pagoDeudaId && (
+                                {d.estado !== 'pagada' && !pagoDeudaId && !showSaldar && (
                                   <button onClick={() => { setPagoDeudaId(d.id); setPagoMonto('') }} className="mt-2 w-full py-1.5 text-xs font-bold font-manrope text-white bg-green-600 rounded-lg focus:outline-none hover:bg-green-700 transition">
                                     {(Number((d as any).montoPagadoUsd) || 0) > 0 ? 'Registrar Otro Abono' : 'Registrar Pago o Abono'}
                                   </button>

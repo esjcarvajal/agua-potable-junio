@@ -3,6 +3,15 @@ import { persist } from 'zustand/middleware'
 import { insertRow, updateRow, subscribeToNode, deleteNode, ajustarInventario, registrarMovimiento, descontarLitrosServidor, agregarLitrosServidor, ajustarDeudaCliente } from '../lib/db'
 import { getLocalDateString } from '../lib/dateUtils'
 
+// Metodos cobrados en bolivares: el cierre los suma desde total_ves.
+const METODOS_EN_BS = ['pago_movil', 'punto_venta', 'efectivo_ves']
+/** Bolivares de un cobro: los tecleados o, si no hay, conversion a la tasa actual. */
+function bolivaresDeCobro(metodo: string, montoUsd: number, tasa: number, tecleadoVes?: number): number {
+    if (!METODOS_EN_BS.includes(metodo)) return 0
+    const ves = Number(tecleadoVes) || 0
+    return parseFloat((ves > 0 ? ves : montoUsd * (Number(tasa) || 0)).toFixed(2))
+}
+
 export interface DeudaPostpago {
     id: string
     clienteId: string
@@ -93,6 +102,16 @@ interface AppState {
     /** Descuenta del saldo a favor. Devuelve lo realmente consumido. */
     consumirSaldoFavor: (clienteId: string, montoUsd: number) => Promise<number>
     marcarDeudaPagada: (deudaId: string, metodoPago?: string, notas?: string) => Promise<void>
+    /** Deja la cuenta del cliente en cero: marca pagadas todas sus deudas
+     *  pendientes, resta de deudaTotalUsd lo que habia en la ficha y registra
+     *  UN solo cobro por el monto recibido. */
+    saldarCuentaCliente: (clienteId: string, opts: {
+        montoRecibidoUsd: number
+        metodoPago: string
+        montoRecibidoVes?: number
+        referencia?: string
+        usuario?: string
+    }) => Promise<{ ok: boolean; cobrado: number; deudasSaldadas: number; sinRespaldo: number; error?: string }>
     getDeudasCliente: (clienteId: string) => DeudaPostpago[]
     getDeudasVencidas: () => DeudaPostpago[]
     getTotalDeudaPendiente: () => number
@@ -399,7 +418,7 @@ export const useAppStore = create<AppState>()(
             // Permite amortizar una deuda por partes. Si el abono cubre
             // el pendiente, la deuda pasa a 'pagada'; si no, sigue
             // pendiente con el acumulado actualizado.
-            abonarDeuda: async (deudaId, montoUsd, metodoPago = 'EFECTIVO USD', notas = '') => {
+            abonarDeuda: async (deudaId, montoUsd, metodoPago = 'efectivo_usd', notas = '') => {
                 const s = get()
                 const deuda = s.deudas.find(d => d.id === deudaId)
                 if (!deuda || deuda.estado === 'pagada') return 0
@@ -450,6 +469,7 @@ export const useAppStore = create<AppState>()(
                     cliente_nombre: deuda.clienteNombre,
                     items_json: JSON.stringify([{ tipo: 'ABONO_POSTPAGO', ref_deuda: deudaId, monto: abonado }]),
                     total_usd: abonado,
+                    total_ves: bolivaresDeCobro(metodoPago, abonado, s.tasaBcv.valor),
                     tasa_bcv: s.tasaBcv.valor,
                     metodo_pago: metodoPago,
                     es_delivery: false,
@@ -468,7 +488,7 @@ export const useAppStore = create<AppState>()(
                 return abonado
             },
 
-            marcarDeudaPagada: async (deudaId, metodoPago = 'EFECTIVO USD', notas = '') => {
+            marcarDeudaPagada: async (deudaId, metodoPago = 'efectivo_usd', notas = '') => {
                 const s = get()
                 const deuda = s.deudas.find(d => d.id === deudaId)
                 if (!deuda) return
@@ -505,6 +525,7 @@ export const useAppStore = create<AppState>()(
                     cliente_nombre: deuda.clienteNombre,
                     items_json: JSON.stringify([{ tipo: 'COBRO_POSTPAGO', ref_deuda: deudaId, monto: pendiente }]),
                     total_usd: pendiente,
+                    total_ves: bolivaresDeCobro(metodoPago, pendiente, s.tasaBcv.valor),
                     tasa_bcv: s.tasaBcv.valor,
                     metodo_pago: metodoPago,
                     es_delivery: false,
@@ -516,6 +537,98 @@ export const useAppStore = create<AppState>()(
                 // Disparar las promesas en bg
                 updateRow('deudas_postpago', deudaId, { estado: 'pagada', montoPagadoUsd: Number(deuda.montoUsd) || 0, fecha_pago: nuevaFecha, notas })
                 insertRow('ventas', cobroVenta)
+            },
+            // ── Saldar la cuenta completa de un cliente ──────────
+            // El POS muestra como DEUDA el campo deudaTotalUsd de la ficha.
+            // Puede no coincidir con la suma de ordenes pendientes (montos
+            // escritos a mano antes de existir "Entregar a credito", o ventas
+            // viejas que no sumaron). Esta accion cierra ambas cosas de una vez.
+            saldarCuentaCliente: async (clienteId, opts) => {
+                const s = get()
+                const cliente: any = s.clientes.find((c: any) => c.id === clienteId)
+                if (!cliente) return { ok: false, cobrado: 0, deudasSaldadas: 0, sinRespaldo: 0, error: 'Cliente no encontrado' }
+
+                const ficha = Math.max(0, Number(cliente.deudaTotalUsd) || 0)
+                const pendientes = s.deudas
+                    .filter(d => d.clienteId === clienteId && d.estado !== 'pagada')
+                    .map(d => ({ d, pend: Math.max(0, (Number(d.montoUsd) || 0) - (Number(d.montoPagadoUsd) || 0)) }))
+                    .filter(x => x.pend > 0.001)
+                const respaldado = parseFloat(pendientes.reduce((t, x) => t + x.pend, 0).toFixed(2))
+                if (ficha <= 0.001 && pendientes.length === 0) {
+                    return { ok: false, cobrado: 0, deudasSaldadas: 0, sinRespaldo: 0, error: 'Este cliente no tiene deuda' }
+                }
+
+                const monto = parseFloat(Math.max(0, Number(opts.montoRecibidoUsd) || 0).toFixed(2))
+                const ahora = new Date()
+                const fechaIso = ahora.toISOString()
+                const metodo = opts.metodoPago || 'efectivo_usd'
+                const referencia = (opts.referencia || '').trim()
+                const usuario = (opts.usuario || '').trim()
+
+                // 1. Marcar pagadas todas las ordenes pendientes
+                const ids = pendientes.map(x => x.d.id)
+                const notaDeuda = 'Saldada con cobro total de la cuenta'
+                set((st) => ({
+                    deudas: st.deudas.map(d => ids.includes(d.id)
+                        ? { ...d, estado: 'pagada' as const, montoPagadoUsd: Number(d.montoUsd) || 0, fechaPago: fechaIso,
+                            notas: [d.notas, notaDeuda].filter(Boolean).join(' · ') }
+                        : d)
+                }))
+                for (const { d } of pendientes) {
+                    updateRow('deudas_postpago', d.id, {
+                        estado: 'pagada',
+                        montoPagadoUsd: Number(d.montoUsd) || 0,
+                        fecha_pago: fechaIso,
+                        notas: [d.notas, notaDeuda].filter(Boolean).join(' · '),
+                    })
+                }
+
+                // 2. Bajar la ficha. Se resta lo que habia (no se escribe 0):
+                //    si otra caja vende a credito a este cliente en el mismo
+                //    instante, esa venta nueva no se pierde.
+                const nuevoTotal = await ajustarDeudaCliente(clienteId, -ficha)
+                set((st) => ({
+                    clientes: st.clientes.map((c: any) => c.id === clienteId
+                        ? { ...c, deudaTotalUsd: nuevoTotal ?? 0 }
+                        : c)
+                }))
+
+                // 3. Un solo registro de cobro (dinero que entra a caja)
+                const sinRespaldo = parseFloat(Math.max(0, ficha - respaldado).toFixed(2))
+                if (monto > 0) {
+                    const cobroVenta = {
+                        id: crypto.randomUUID(),
+                        fecha: getLocalDateString(ahora),
+                        hora: ahora.toLocaleTimeString(),
+                        cliente_id: clienteId,
+                        cliente_nombre: cliente.nombre,
+                        items_json: JSON.stringify([{
+                            tipo: 'COBRO_POSTPAGO',
+                            saldo_total: true,
+                            ref_deudas: ids,
+                            monto,
+                            deuda_ficha_usd: ficha,
+                            deuda_respaldada_usd: respaldado,
+                        }]),
+                        total_usd: monto,
+                        total_ves: bolivaresDeCobro(metodo, monto, s.tasaBcv.valor, opts.montoRecibidoVes),
+                        tasa_bcv: s.tasaBcv.valor,
+                        metodo_pago: metodo,
+                        es_delivery: false,
+                        estado_delivery: 'completado',
+                        costo_delivery_usd: 0,
+                        notas: [
+                            `COBRO TOTAL DE CUENTA — ${pendientes.length} orden(es)`,
+                            sinRespaldo > 0 ? `incluye $${sinRespaldo.toFixed(2)} sin orden de respaldo` : '',
+                            referencia ? `Ref: ${referencia}` : '',
+                            usuario ? `Registró: ${usuario}` : '',
+                        ].filter(Boolean).join(' · '),
+                    }
+                    set((st) => ({ ventas: [cobroVenta, ...st.ventas] }))
+                    insertRow('ventas', cobroVenta)
+                }
+
+                return { ok: true, cobrado: monto, deudasSaldadas: ids.length, sinRespaldo }
             },
             getDeudasCliente: (clienteId) => get().deudas.filter(d => d.clienteId === clienteId),
             getDeudasVencidas: () => {
