@@ -1,0 +1,517 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   PORTADA PÚBLICA · Agua Potable La Campiña
+   Todo queda bajo .lc-home para no afectar /app. El maquetado usa Tailwind;
+   aquí solo va lo que Tailwind no resuelve limpio: fuentes, máscaras de
+   fotos, degradados y detalles del logo.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Fuentes propias de la portada (SIL Open Font License, ver fuentes/LICENCIAS.txt).
+   El navegador solo las descarga en esta página, que es donde se usan. */
+@font-face {
+  font-family: 'LC Manrope';
+  src: url('./fuentes/manrope-latin-wght-normal.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'LC Nunito';
+  src: url('./fuentes/nunito-latin-900-italic.woff2') format('woff2');
+  font-weight: 900;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'LC Kaushan';
+  src: url('./fuentes/kaushan-script-latin-400-normal.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+html:has(.lc-home) {
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html:has(.lc-home) {
+    scroll-behavior: auto;
+  }
+}
+
+.lc-home {
+  --lc-navy: #0b2551;
+  --lc-tinta: #3b4a63;
+  --lc-gris: #56657e;
+  --lc-azul: #1660d6;
+  --lc-azul-fuerte: #0c47b0;
+  --lc-cielo: #eef5ff;
+  --lc-verde: #12873d;
+  --lc-verde-hover: #0e7333;
+  --lc-wa: #1fa855;
+  font-family: 'LC Manrope', 'Manrope', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--lc-tinta);
+  background: #fff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: clip; /* fotos a sangre sin scroll horizontal (no rompe el menú fijo) */
+}
+.lc-home section[id] {
+  scroll-margin-top: 76px;
+}
+.lc-home :focus-visible {
+  outline: 3px solid #4d9bff;
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+/* ── Enlace "saltar al contenido" ─────────────────────────────────────── */
+.lc-saltar {
+  position: absolute;
+  left: 1rem;
+  top: -4rem;
+  z-index: 60;
+  padding: 0.65rem 1rem;
+  border-radius: 0.6rem;
+  background: var(--lc-navy);
+  color: #fff;
+  font-weight: 700;
+}
+.lc-saltar:focus {
+  top: 1rem;
+}
+
+/* ── Tipografía ───────────────────────────────────────────────────────── */
+.lc-antetitulo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--lc-azul);
+}
+.lc-antetitulo::after {
+  content: '';
+  width: 2.5rem;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.55;
+}
+.lc-antetitulo--centro::before {
+  content: '';
+  width: 2.5rem;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.55;
+}
+.lc-antetitulo--claro {
+  color: #9fd0ff;
+}
+@media (max-width: 639px) {
+  .lc-antetitulo {
+    gap: 0.6rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.11em;
+  }
+  .lc-antetitulo::after,
+  .lc-antetitulo--centro::before {
+    width: 1.5rem;
+  }
+}
+.lc-display {
+  display: block;
+  font-weight: 800;
+  font-size: clamp(2.35rem, 1.15rem + 3.7vw, 4.05rem);
+  line-height: 1.04;
+  letter-spacing: -0.028em;
+  color: var(--lc-navy);
+  text-wrap: balance;
+}
+.lc-titulo {
+  font-weight: 800;
+  font-size: clamp(1.85rem, 1.15rem + 1.9vw, 2.7rem);
+  line-height: 1.1;
+  letter-spacing: -0.022em;
+  color: var(--lc-navy);
+  text-wrap: balance;
+}
+.lc-texto-degradado {
+  background: linear-gradient(90deg, #1660d6 0%, #1a7fd6 55%, #1e90e8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  padding-right: 0.04em;
+}
+
+/* ── Botones ──────────────────────────────────────────────────────────── */
+.lc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  min-height: 48px;
+  padding: 0.75rem 1.4rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.97rem;
+  line-height: 1.1;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease,
+    border-color 0.2s ease;
+}
+.lc-btn:hover {
+  transform: translateY(-1px);
+}
+.lc-btn--wa {
+  background: var(--lc-verde);
+  color: #fff;
+  box-shadow: 0 12px 24px -12px rgba(18, 135, 61, 0.7);
+}
+.lc-btn--wa:hover {
+  background: var(--lc-verde-hover);
+}
+.lc-btn--contorno {
+  background: #fff;
+  color: var(--lc-azul-fuerte);
+  border: 1.5px solid rgba(22, 96, 214, 0.42);
+}
+.lc-btn--contorno:hover {
+  border-color: var(--lc-azul);
+  background: #f5f9ff;
+}
+.lc-btn--azul {
+  background: linear-gradient(135deg, #1660d6, #0c47b0);
+  color: #fff;
+  box-shadow: 0 12px 24px -12px rgba(12, 71, 176, 0.7);
+}
+.lc-btn--pequeno {
+  min-height: 42px;
+  padding: 0.6rem 1.1rem;
+  font-size: 0.92rem;
+}
+
+/* ── Logo horizontal (emblema + nombre) ───────────────────────────────── */
+.lc-logo {
+  --lc-logo-emblema: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+@media (min-width: 1024px) {
+  .lc-logo {
+    --lc-logo-emblema: 50px;
+  }
+}
+.lc-logo__emblema {
+  width: var(--lc-logo-emblema);
+  height: var(--lc-logo-emblema);
+  flex-shrink: 0;
+  filter: drop-shadow(0 4px 10px rgba(11, 37, 81, 0.18));
+}
+.lc-logo__texto {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+}
+.lc-logo__agua {
+  font-family: 'LC Nunito', 'Nunito', 'Arial Rounded MT Bold', 'Trebuchet MS', sans-serif;
+  font-style: italic;
+  font-weight: 900;
+  font-size: calc(var(--lc-logo-emblema) * 0.45);
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  padding-right: 0.12em;
+  background: linear-gradient(180deg, #2f73e6 0%, #1450c4 55%, #0b3a9c 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.lc-logo__campina {
+  font-family: 'LC Kaushan', 'Brush Script MT', cursive;
+  font-size: calc(var(--lc-logo-emblema) * 0.42);
+  white-space: nowrap;
+  color: #0b2a63;
+  margin-top: 0.08em;
+  padding-left: 0.95em;
+}
+.lc-logo--oscuro .lc-logo__agua {
+  background: none;
+  color: #fff;
+}
+.lc-logo--oscuro .lc-logo__campina {
+  color: #9fd0ff;
+}
+.lc-logo--grande {
+  --lc-logo-emblema: 58px;
+}
+
+/* ── Encabezado ───────────────────────────────────────────────────────── */
+.lc-encabezado {
+  background: rgba(255, 255, 255, 0.9);
+  -webkit-backdrop-filter: saturate(160%) blur(14px);
+  backdrop-filter: saturate(160%) blur(14px);
+  transition: box-shadow 0.25s ease;
+}
+.lc-encabezado--sombra {
+  box-shadow: 0 10px 30px -18px rgba(11, 37, 81, 0.35);
+}
+.lc-menu-enlace {
+  position: relative;
+  display: inline-block;
+  padding: 0.45rem 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #41506a;
+  transition: color 0.2s ease;
+}
+.lc-menu-enlace:hover,
+.lc-menu-enlace[aria-current] {
+  color: var(--lc-azul);
+}
+.lc-menu-enlace::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -0.1rem;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--lc-azul);
+  transform: scaleX(0);
+  transition: transform 0.25s ease;
+}
+.lc-menu-enlace[aria-current]::after {
+  transform: scaleX(1);
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────────── */
+.lc-hero {
+  background:
+    radial-gradient(900px 520px at -8% -12%, #e3f0ff 0%, rgba(227, 240, 255, 0) 62%),
+    linear-gradient(180deg, #ffffff 0%, #f6faff 100%);
+}
+.lc-hero__foto {
+  position: relative;
+  height: 15.5rem;
+}
+.lc-hero__foto img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 34% 38%;
+  -webkit-mask-image: linear-gradient(to bottom, #000 58%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 58%, transparent 100%);
+}
+@media (min-width: 640px) {
+  .lc-hero__foto {
+    height: 22rem;
+  }
+}
+@media (min-width: 1024px) {
+  .lc-hero__foto {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    height: auto;
+    width: 54vw;
+  }
+  .lc-hero__foto img {
+    object-position: 36% 50%;
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, 0.55) 15%, #000 34%);
+    mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, 0.55) 15%, #000 34%);
+  }
+}
+@media (min-width: 1440px) {
+  .lc-hero__foto {
+    width: min(58vw, 1040px);
+  }
+}
+
+/* Burbujas decorativas */
+.lc-burbuja {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 32% 28%,
+    rgba(255, 255, 255, 0.95) 0 11%,
+    rgba(255, 255, 255, 0.4) 30%,
+    rgba(140, 195, 255, 0.22) 62%,
+    rgba(140, 195, 255, 0.06) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow:
+    inset -3px -5px 10px rgba(22, 96, 214, 0.16),
+    0 6px 14px rgba(22, 96, 214, 0.1);
+}
+
+/* ── Fotos laterales a sangre (equipo y familia) ──────────────────────── */
+.lc-foto-lateral {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1.25rem;
+  box-shadow: 0 24px 48px -28px rgba(11, 37, 81, 0.45);
+}
+.lc-foto-lateral img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+@media (min-width: 1024px) {
+  .lc-foto-lateral {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .lc-foto-lateral--derecha {
+    right: 0;
+    width: 57vw;
+  }
+  .lc-foto-lateral--derecha img {
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, 0.6) 12%, #000 26%);
+    mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, 0.6) 12%, #000 26%);
+  }
+  .lc-foto-lateral--izquierda {
+    left: 0;
+    width: 46vw;
+  }
+  .lc-foto-lateral--izquierda img {
+    -webkit-mask-image: linear-gradient(to left, transparent 0%, rgba(0, 0, 0, 0.6) 9%, #000 22%);
+    mask-image: linear-gradient(to left, transparent 0%, rgba(0, 0, 0, 0.6) 9%, #000 22%);
+  }
+}
+@media (min-width: 1440px) {
+  .lc-foto-lateral--derecha {
+    width: min(57vw, 1080px);
+  }
+  .lc-foto-lateral--izquierda {
+    width: min(46vw, 880px);
+  }
+}
+
+/* Encuadre de cada foto (qué parte queda a la vista al recortar) */
+.lc-foto-equipo img {
+  object-position: 50% 40%;
+}
+.lc-foto-familia img {
+  object-position: 50% 22%;
+}
+@media (min-width: 1024px) {
+  .lc-foto-equipo img {
+    object-position: 15% 50%;
+  }
+  .lc-foto-familia img {
+    object-position: 50% 18%;
+  }
+}
+
+.lc-eslogan {
+  font-family: 'LC Kaushan', 'Brush Script MT', cursive;
+}
+
+/* ── Tarjetas ─────────────────────────────────────────────────────────── */
+.lc-tarjeta {
+  background: #fff;
+  border-radius: 1.25rem;
+  border: 1px solid rgba(22, 96, 214, 0.1);
+  box-shadow: 0 16px 36px -24px rgba(11, 37, 81, 0.38);
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease;
+}
+.lc-tarjeta--interactiva:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 24px 44px -26px rgba(11, 37, 81, 0.5);
+}
+
+/* ── Banda azul (cómo pedir) ──────────────────────────────────────────── */
+.lc-banda-azul {
+  background:
+    radial-gradient(760px 380px at 88% -10%, rgba(64, 166, 255, 0.38), rgba(64, 166, 255, 0) 62%),
+    radial-gradient(620px 320px at 0% 110%, rgba(30, 144, 232, 0.3), rgba(30, 144, 232, 0) 60%),
+    linear-gradient(135deg, #0a2f7a 0%, #0c47b0 52%, #1667d8 100%);
+  color: #fff;
+}
+
+/* ── Pie de página ────────────────────────────────────────────────────── */
+.lc-pie__ola {
+  line-height: 0;
+  background: #fff;
+}
+.lc-pie__ola img {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 34px;
+  object-fit: cover;
+  object-position: center bottom;
+}
+.lc-pie__cuerpo {
+  margin-top: -1px;
+  color: #b9cdee;
+  /* Empalma con el borde inferior de la ola y oscurece hacia el azul marino */
+  background:
+    linear-gradient(180deg, rgba(6, 26, 61, 0) 0, #061a3d 260px),
+    linear-gradient(
+      90deg,
+      #002790 0%,
+      #013298 12.5%,
+      #0247ac 25%,
+      #0252b1 37.5%,
+      #0253bf 50%,
+      #0056bd 62.5%,
+      #0068cb 75%,
+      #017dd7 87.5%,
+      #005cc1 100%
+    );
+}
+.lc-pie__enlace {
+  color: #b9cdee;
+  transition: color 0.2s ease;
+}
+.lc-pie__enlace:hover {
+  color: #fff;
+}
+
+/* ── Botón flotante de WhatsApp ───────────────────────────────────────── */
+.lc-wa-flotante {
+  position: fixed;
+  right: 1.1rem;
+  bottom: 1.1rem;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  width: 3.6rem;
+  height: 3.6rem;
+  border-radius: 999px;
+  background: var(--lc-wa);
+  color: #fff;
+  box-shadow: 0 14px 30px -10px rgba(31, 168, 85, 0.75);
+  transition: transform 0.2s ease;
+}
+.lc-wa-flotante:hover {
+  transform: scale(1.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lc-btn,
+  .lc-tarjeta,
+  .lc-wa-flotante,
+  .lc-menu-enlace::after {
+    transition: none;
+  }
+  .lc-btn:hover,
+  .lc-tarjeta--interactiva:hover,
+  .lc-wa-flotante:hover {
+    transform: none;
+  }
+}
